@@ -240,7 +240,7 @@ class LayerContext {
     }
 
     // add tile of tileset "index" to Level at location x,y
-    addTileLevelPx(x, y, index) {
+    addTileLevelPx(x, y, index, animationName = null) {
 
         if (x > CONFIG.levelwidth || y > CONFIG.levelheight){
             console.log("tile placed outside of level boundary, ignoring",x,y)
@@ -254,8 +254,18 @@ class LayerContext {
         let ctile2 = null;
 
         if(g_ctx.spritesheet != null){
-            ctile  =  new PIXI.AnimatedSprite(g_ctx.spritesheet.animations['row0']);
-            ctile2 =  new PIXI.AnimatedSprite(g_ctx.spritesheet.animations['row0']);
+            const animations = g_ctx.spritesheet.animations || {};
+            // 优先使用调用方显式指定的动画名，不存在则回退到第一个可用动画
+            const resolvedAnimationName = (animationName && animations[animationName])
+                ? animationName
+                : Object.keys(animations)[0];
+            if (!resolvedAnimationName || !animations[resolvedAnimationName]) {
+                console.warn("addTileLevelPx: spritesheet 没有可用动画，跳过放置", g_ctx.spritesheetname);
+                return -1;
+            }
+
+            ctile  =  new PIXI.AnimatedSprite(animations[resolvedAnimationName]);
+            ctile2 =  new PIXI.AnimatedSprite(animations[resolvedAnimationName]);
             ctile.animationSpeed = .1;
             ctile2.animationSpeed = .1;
             ctile.autoUpdate = true;
@@ -264,7 +274,7 @@ class LayerContext {
             ctile2.play();
 
             // HACK for now just stuff animated sprite details into the sprite
-            ctile.animationname   = 'row0';
+            ctile.animationname   = resolvedAnimationName;
             ctile.spritesheetname = g_ctx.spritesheetname; 
 
         } else {
@@ -381,11 +391,21 @@ class TilesetContext {
         g_ctx.spritesheet = sheet;
         g_ctx.spritesheetname = name;
 
-        let as =  new PIXI.AnimatedSprite(sheet.animations['row0']);
+        const animations = sheet.animations || {};
+        // 选择 spritesheet 中第一个可用动画作为默认预览
+        const resolvedAnimationName = Object.keys(animations)[0];
+        if (!resolvedAnimationName || !animations[resolvedAnimationName]) {
+            console.warn("addTileSheet: spritesheet 没有可用动画，跳过预览", name);
+            g_ctx.g_layers[0].curanimatedtile = null;
+            return;
+        }
+
+        let as =  new PIXI.AnimatedSprite(animations[resolvedAnimationName]);
         as.animationSpeed = .1;
         as.autoUpdate = true;
         as.play();
         as.alpha = .5;
+        as.animationname = resolvedAnimationName;
         g_ctx.g_layers[0].curanimatedtile = as;
     }
 } // class TilesetContext
@@ -455,9 +475,8 @@ function loadAnimatedSpritesFromModule(mod){
                 g_ctx.spritesheetname = key;
                 let asprarray = m.get(key);
                 for (let asprite of asprarray) {
-                    // TODO FIXME, pass in animation name
                     console.log("Loading animation", asprite.animation);
-                    g_ctx.g_layers[asprite.layer].addTileLevelPx(asprite.x, asprite.y, -1);
+                    g_ctx.g_layers[asprite.layer].addTileLevelPx(asprite.x, asprite.y, -1, asprite.animation);
                 }
                 g_ctx.spritesheet     = null;
                 g_ctx.spritesheetname = null;
@@ -709,8 +728,9 @@ window.fill0 = () => {
     UNDO.undo_mark_task_start(g_ctx.g_layers[0]);
     for(let i = 0; i < CONFIG.levelwidth / g_ctx.tiledimx; i++){
         for(let j = 0; j < CONFIG.levelheight / g_ctx.tiledimx; j++){
+            let oldValue = getOldTileValue(g_ctx.g_layers[0], i * g_ctx.tiledimx, j * g_ctx.tiledimx);
             let ti = g_ctx.g_layers[0].addTileLevelCoords(i,j,g_ctx.tiledimx, g_ctx.tile_index);
-            UNDO.undo_add_index_to_task(ti);
+            UNDO.undo_add_index_to_task(ti, oldValue);
         }
     }
     UNDO.undo_mark_task_end();
@@ -769,7 +789,7 @@ window.addEventListener(
                 g_ctx.composite.container.removeChild(layer.composite_sprites[undome[i][0]]);
                 
                 // Restore original tile if it existed
-                if (undome[i][1] !== -1) {
+                if (undome[i][1] != null && undome[i][1] !== -1) {
                     let pxloc = tileset_px_from_index(undome[i][1]);
                     let originalTile = sprite_from_px(pxloc[0] + g_ctx.tileset.fudgex, pxloc[1] + g_ctx.tileset.fudgey);
                     let originalTile2 = sprite_from_px(pxloc[0] + g_ctx.tileset.fudgex, pxloc[1] + g_ctx.tileset.fudgey);
@@ -1015,8 +1035,26 @@ function onLevelMouseover(e) {
 
     // FIXME test code
     if ( g_ctx.spritesheet != null){
-        let ctile  =  new PIXI.AnimatedSprite(g_ctx.spritesheet.animations['row0']);
-        let ctile2 =  new PIXI.AnimatedSprite(g_ctx.spritesheet.animations['row0']);
+        const animations = g_ctx.spritesheet.animations || {};
+        // 优先使用当前预览记录的动画名，不存在则回退到第一个可用动画
+        const preferredAnimationName = (
+            g_ctx.g_layers &&
+            g_ctx.g_layers[0] &&
+            g_ctx.g_layers[0].curanimatedtile &&
+            g_ctx.g_layers[0].curanimatedtile.animationname
+        )
+            ? g_ctx.g_layers[0].curanimatedtile.animationname
+            : null;
+        const resolvedAnimationName = (preferredAnimationName && animations[preferredAnimationName])
+            ? preferredAnimationName
+            : Object.keys(animations)[0];
+        if (!resolvedAnimationName || !animations[resolvedAnimationName]) {
+            console.warn("onLevelMouseover: spritesheet 没有可用动画，跳过预览", g_ctx.spritesheetname);
+            return;
+        }
+
+        let ctile  =  new PIXI.AnimatedSprite(animations[resolvedAnimationName]);
+        let ctile2 =  new PIXI.AnimatedSprite(animations[resolvedAnimationName]);
         ctile.animationSpeed = .1;
         ctile2.animationSpeed = .1;
         ctile.autoUpdate = true;
