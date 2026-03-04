@@ -56,12 +56,62 @@ class ReflectionOrchestrator:
                 logger.warning("[AstrTown] missing binding(agent/player); skip async reflection")
                 return
 
+            transcript_messages: list[dict[str, str]] = []
+            for item in messages:
+                if not isinstance(item, dict):
+                    continue
+                speaker_id = str(
+                    item.get("speakerId")
+                    or item.get("senderId")
+                    or item.get("authorId")
+                    or item.get("author")
+                    or ""
+                ).strip()
+                content = str(item.get("content") or item.get("text") or "").strip()
+                if not content:
+                    continue
+                transcript_messages.append(
+                    {
+                        "speakerId": speaker_id or "unknown",
+                        "content": content,
+                    }
+                )
+
+            if not transcript_messages:
+                logger.info(
+                    f"[AstrTown] reflection skipped: transcript empty, conversationId={conversation_id}"
+                )
+                return
+
+            if len(transcript_messages) < 2:
+                logger.info(
+                    f"[AstrTown] reflection skipped: transcript messages < 2, "
+                    f"conversationId={conversation_id}, count={len(transcript_messages)}"
+                )
+                return
+
+            owner_speeches = [
+                msg for msg in transcript_messages if str(msg.get("speakerId") or "").strip() == owner_id
+            ]
+            if not owner_speeches:
+                logger.info(
+                    f"[AstrTown] reflection skipped: no owner speech in transcript, "
+                    f"conversationId={conversation_id}, ownerId={owner_id}"
+                )
+                return
+
             prompt = self._parser.build_reflection_prompt(
                 conversation_id=conversation_id,
                 other_player_name=other_player_name,
                 other_player_id=other_player_id,
-                messages=messages,
+                messages=transcript_messages,
             )
+            if not prompt:
+                logger.info(
+                    f"[AstrTown] reflection skipped: prompt empty after transcript validation, "
+                    f"conversationId={conversation_id}"
+                )
+                return
 
             llm_result = await callback(prompt)
             normalized = self._parser.normalize_reflection_response(llm_result)

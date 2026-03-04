@@ -269,7 +269,29 @@ class WorldEventDispatcher:
             )
             if not other_player_name:
                 other_player_name = other_player_id or "对方"
-            messages = SessionContextService.extract_conversation_messages(payload)
+
+            transcript_task = asyncio.create_task(
+                self._host._http_client.get_conversation_transcript(
+                    world_id=str(self._host._world_id or "").strip(),
+                    conversation_id=ended_cid,
+                ),
+                name=f"astrtown_transcript_{ended_cid or event_id or 'unknown'}",
+            )
+            self._host._track_background_task(transcript_task)
+
+            transcript_data = None
+            try:
+                transcript_data = await transcript_task
+            except Exception as e:
+                logger.warning(
+                    f"[AstrTown] conversation transcript 获取异常，conversationId={ended_cid or '-'}: {e}"
+                )
+
+            transcript_messages: list[dict[str, str]] = []
+            if isinstance(transcript_data, dict):
+                raw_messages = transcript_data.get("messages")
+                if isinstance(raw_messages, list):
+                    transcript_messages = [m for m in raw_messages if isinstance(m, dict)]
 
             # 关键约束：反思任务必须异步后台执行，不能阻塞事件主流程。
             reflect_task = asyncio.create_task(
@@ -277,7 +299,7 @@ class WorldEventDispatcher:
                     conversation_id=ended_cid,
                     other_player_name=other_player_name,
                     other_player_id=other_player_id,
-                    messages=messages,
+                    messages=transcript_messages,
                 ),
                 name=f"astrtown_reflect_{ended_cid or event_id or 'unknown'}",
             )

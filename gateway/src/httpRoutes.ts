@@ -278,6 +278,32 @@ export function registerBotHttpProxyRoutes(
     }
   });
 
+  app.post('/api/bot/conversation/transcript', async (req, reply) => {
+    const auth = req.headers.authorization;
+    if (typeof auth !== 'string' || auth.length === 0) {
+      reply.code(401);
+      return { ok: false, error: 'Missing Authorization header' };
+    }
+
+    try {
+      const res = await fetch(`${(deps.astr as any).baseUrl ?? ''}/api/bot/conversation/transcript`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: auth,
+        },
+        body: JSON.stringify(req.body ?? {}),
+      });
+      const data = (await res.json().catch(() => ({}))) as any;
+      reply.code(res.status);
+      return data;
+    } catch (e: any) {
+      deps.log.error({ err: String(e?.message ?? e) }, 'transcript proxy failed');
+      reply.code(500);
+      return { ok: false, error: 'Gateway error' };
+    }
+  });
+
   app.post('/api/bot/memory/inject', async (req, reply) => {
     const auth = req.headers.authorization;
     if (typeof auth !== 'string' || auth.length === 0) {

@@ -12,6 +12,7 @@ import {
   postMemoryInject,
   postMemorySearch,
   getRecentMemories,
+  handleGetConversationTranscript,
   postSocialAffinity,
   postSocialRelationship,
   postTokenCreate,
@@ -181,6 +182,12 @@ http.route({
   path: '/api/bot/memory/inject',
   method: 'POST',
   handler: postMemoryInject,
+});
+
+http.route({
+  path: '/api/bot/conversation/transcript',
+  method: 'POST',
+  handler: handleGetConversationTranscript,
 });
 
 export default http;

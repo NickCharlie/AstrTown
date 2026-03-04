@@ -26,6 +26,8 @@ function buildExternalMemoryData(
   agentId: GameId<'agents'>,
   playerId: GameId<'players'>,
   now: number,
+  conversationId: string | undefined,
+  counterpartPlayerIds: string[] | undefined,
 ): Memory['data'] {
   const type = memoryType ?? 'conversation';
   if (type === 'relationship') {
@@ -45,8 +47,10 @@ function buildExternalMemoryData(
   }
   return {
     type,
-    conversationId: `c:${now}:${worldId}:${agentId}` as GameId<'conversations'>,
-    playerIds: [],
+    conversationId:
+      (conversationId as GameId<'conversations'> | undefined) ??
+      (`c:${now}:${worldId}:${agentId}` as GameId<'conversations'>),
+    playerIds: (counterpartPlayerIds ?? []) as GameId<'players'>[],
   };
 }
 
@@ -58,16 +62,43 @@ async function insertExternalMemoryImpl(
   summary: string,
   importance: number,
   memoryType: string | undefined,
+  conversationId: string | undefined,
+  counterpartPlayerIds: string[] | undefined,
+  transcriptDigest: string | undefined,
+  transcriptMessageCount: number | undefined,
+  sourceEventId: string | undefined,
+  externalKey: string | undefined,
 ) {
   const { embedding } = await fetchEmbedding(summary);
   const now = Date.now();
+  const sourceContext =
+    conversationId !== undefined
+      ? {
+          sourceType: memoryType ?? 'conversation',
+          conversationId,
+          counterpartPlayerIds: counterpartPlayerIds ?? [],
+          transcriptDigest: transcriptDigest ?? '',
+          transcriptMessageCount: transcriptMessageCount ?? 0,
+          sourceEventId: sourceEventId ?? '',
+        }
+      : undefined;
   await ctx.runMutation(selfInternal.insertMemory, {
     agentId,
     playerId,
     description: summary,
     importance,
     lastAccess: now,
-    data: buildExternalMemoryData(memoryType, worldId, agentId, playerId, now),
+    externalKey,
+    sourceContext,
+    data: buildExternalMemoryData(
+      memoryType,
+      worldId,
+      agentId,
+      playerId,
+      now,
+      conversationId,
+      counterpartPlayerIds,
+    ),
     embedding,
   });
 
@@ -82,6 +113,12 @@ export const insertExternalMemory = internalAction({
     summary: v.string(),
     importance: v.number(),
     memoryType: v.optional(v.string()),
+    conversationId: v.optional(v.string()),
+    counterpartPlayerIds: v.optional(v.array(v.string())),
+    transcriptDigest: v.optional(v.string()),
+    transcriptMessageCount: v.optional(v.number()),
+    sourceEventId: v.optional(v.string()),
+    externalKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     return await insertExternalMemoryImpl(
@@ -92,6 +129,12 @@ export const insertExternalMemory = internalAction({
       args.summary,
       args.importance,
       args.memoryType,
+      args.conversationId,
+      args.counterpartPlayerIds,
+      args.transcriptDigest,
+      args.transcriptMessageCount,
+      args.sourceEventId,
+      args.externalKey,
     );
   },
 });

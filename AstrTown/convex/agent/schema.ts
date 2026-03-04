@@ -9,6 +9,17 @@ export const memoryFields = {
   embeddingId: v.id('memoryEmbeddings'),
   importance: v.number(),
   lastAccess: v.number(),
+  externalKey: v.optional(v.string()),
+  sourceContext: v.optional(
+    v.object({
+      sourceType: v.string(),
+      conversationId: v.string(),
+      counterpartPlayerIds: v.array(v.string()),
+      transcriptDigest: v.string(),
+      transcriptMessageCount: v.number(),
+      sourceEventId: v.string(),
+    }),
+  ),
   data: v.union(
     // Setting up dynamics between players
     v.object({
@@ -33,7 +44,8 @@ export const memoryTables = {
   memories: defineTable(memoryFields)
     .index('embeddingId', ['embeddingId'])
     .index('playerId_type', ['playerId', 'data.type'])
-    .index('playerId', ['playerId']),
+    .index('playerId', ['playerId'])
+    .index('playerId_externalKey', ['playerId', 'externalKey']),
   memoryEmbeddings: defineTable({
     playerId,
     embedding: v.array(v.float64()),

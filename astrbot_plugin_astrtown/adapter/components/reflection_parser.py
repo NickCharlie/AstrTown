@@ -18,7 +18,7 @@ class ReflectionParser:
         other_player_name: str,
         other_player_id: str,
         messages: list[dict[str, str]],
-    ) -> str:
+    ) -> str | None:
         role_name = str(self._host._player_name or "该角色").strip() or "该角色"
         target_name = other_player_name.strip() or other_player_id.strip() or "对方"
 
@@ -29,7 +29,10 @@ class ReflectionParser:
             if not content:
                 continue
             transcript_lines.append(f"{idx}. {speaker}: {content}")
-        transcript = "\n".join(transcript_lines) if transcript_lines else "（无可用对话记录）"
+        if not transcript_lines:
+            return None
+
+        transcript = "\n".join(transcript_lines)
 
         return (
             f"请作为 {role_name} 的潜意识反思刚刚结束的对话。\n"

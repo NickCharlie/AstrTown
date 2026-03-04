@@ -109,6 +109,102 @@ class GatewayHttpClient:
 
         return []
 
+    async def get_conversation_transcript(
+        self,
+        world_id: str,
+        conversation_id: str,
+        max_messages: int = 80,
+        order: str = "asc",
+    ) -> dict[str, Any] | None:
+        """查询已归档会话转录。"""
+        if aiohttp is None:
+            logger.warning("[AstrTown] aiohttp not available; conversation transcript skipped")
+            return None
+
+        wid = str(world_id or "").strip()
+        cid = str(conversation_id or "").strip()
+        if not wid or not cid:
+            logger.warning("[AstrTown] conversation transcript skipped: world_id/conversation_id 为空")
+            return None
+
+        try:
+            msg_limit = int(max_messages)
+        except (TypeError, ValueError):
+            msg_limit = 80
+        if msg_limit <= 0:
+            msg_limit = 80
+        if msg_limit > 300:
+            msg_limit = 300
+
+        sort_order = str(order or "asc").strip().lower()
+        if sort_order not in ("asc", "desc"):
+            sort_order = "asc"
+
+        base = self.build_http_base_url()
+        if not base:
+            logger.warning("[AstrTown] invalid gateway base url; conversation transcript skipped")
+            return None
+
+        url = base + "/api/bot/conversation/transcript"
+        headers = {"Authorization": f"Bearer {self._host.token}"}
+        body = {
+            "worldId": wid,
+            "conversationId": cid,
+            "maxMessages": msg_limit,
+            "order": sort_order,
+        }
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=8.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=body, headers=headers) as resp:
+                    if resp.status < 200 or resp.status >= 300:
+                        text = ""
+                        try:
+                            text = await resp.text()
+                        except Exception:
+                            text = ""
+                        logger.warning(
+                            f"[AstrTown] conversation transcript 失败 http={resp.status}, "
+                            f"conversationId={cid}: {text[:200]}"
+                        )
+                        return None
+
+                    data = await resp.json()
+                    if not isinstance(data, dict):
+                        logger.warning(
+                            f"[AstrTown] conversation transcript 响应格式异常: type={type(data)!r}, conversationId={cid}"
+                        )
+                        return None
+
+                    raw_messages = data.get("messages")
+                    normalized_messages: list[dict[str, str]] = []
+                    if isinstance(raw_messages, list):
+                        for item in raw_messages:
+                            if not isinstance(item, dict):
+                                continue
+                            speaker_id = str(
+                                item.get("speakerId")
+                                or item.get("senderId")
+                                or item.get("authorId")
+                                or item.get("author")
+                                or "unknown"
+                            ).strip() or "unknown"
+                            content = str(item.get("content") or item.get("text") or "").strip()
+                            if not content:
+                                continue
+                            normalized_messages.append(
+                                {
+                                    "speakerId": speaker_id,
+                                    "content": content,
+                                }
+                            )
+                    data["messages"] = normalized_messages
+                    return data
+        except Exception as e:
+            logger.warning(f"[AstrTown] conversation transcript 网络异常: {e}")
+            return None
+
     async def sync_persona_to_gateway(self, player_id: str | None) -> None:
         """尽最大努力将人设描述同步到 Gateway -> Convex。
 

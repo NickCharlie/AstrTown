@@ -430,6 +430,91 @@ export const getExternalQueueStatus = query({
   },
 });
 
+export const getConversationTranscript = query({
+  args: {
+    worldId: v.id('worlds'),
+    conversationId: v.string(),
+    requesterPlayerId: v.string(),
+    maxMessages: v.optional(v.number()),
+    order: v.optional(v.union(v.literal('asc'), v.literal('desc'))),
+  },
+  handler: async (ctx: any, args: any) => {
+    const maxMessages = args.maxMessages ?? 80;
+    if (!Number.isInteger(maxMessages) || maxMessages <= 0 || maxMessages > 300) {
+      throw new Error('maxMessages must be an integer between 1 and 300');
+    }
+
+    const order = args.order ?? 'asc';
+
+    const conversation = await ctx.db
+      .query('archivedConversations')
+      .withIndex('worldId', (q: any) => q.eq('worldId', args.worldId).eq('id', args.conversationId))
+      .unique();
+
+    if (!conversation) {
+      return { ok: false as const, code: 'NOT_FOUND' as const };
+    }
+
+    if (!conversation.participants.includes(args.requesterPlayerId)) {
+      return { ok: false as const, code: 'FORBIDDEN' as const };
+    }
+
+    const rawMessages = await ctx.db
+      .query('messages')
+      .withIndex('conversationId', (q: any) => q.eq('worldId', args.worldId).eq('conversationId', args.conversationId))
+      .collect();
+
+    const playerNameCache = new Map<string, string | null>();
+    const messages: Array<{
+      messageId: string;
+      timestamp: number;
+      senderId: string;
+      senderName: string | null;
+      content: string;
+      messageUuid: string;
+    }> = [];
+
+    for (const m of rawMessages) {
+      if (!playerNameCache.has(m.author)) {
+        const pd = await ctx.db
+          .query('playerDescriptions')
+          .withIndex('worldId', (q: any) => q.eq('worldId', args.worldId).eq('playerId', m.author))
+          .unique();
+        playerNameCache.set(m.author, pd?.name ?? null);
+      }
+
+      messages.push({
+        messageId: String(m._id),
+        timestamp: m._creationTime,
+        senderId: m.author,
+        senderName: playerNameCache.get(m.author) ?? '',
+        content: m.text,
+        messageUuid: m.messageUuid,
+      });
+    }
+
+    messages.sort((a, b) => a.timestamp - b.timestamp);
+
+    const truncated = messages.length > maxMessages;
+    const limitedAsc = truncated ? messages.slice(messages.length - maxMessages) : messages;
+    const orderedMessages = order === 'desc' ? [...limitedAsc].reverse() : limitedAsc;
+
+    return {
+      ok: true as const,
+      conversation: {
+        conversationId: conversation.id,
+        created: conversation.created,
+        ended: conversation.ended,
+        participants: conversation.participants,
+        numMessages: conversation.numMessages,
+      },
+      messages: orderedMessages,
+      truncated,
+      returnedCount: orderedMessages.length,
+    };
+  },
+});
+
 export const postCommandBatch = mutation({
   args: {
     worldId: v.id('worlds'),
@@ -1033,6 +1118,80 @@ export const getRecentMemories = httpAction(async (ctx: ActionCtx, request: Requ
   }
 });
 
+export const handleGetConversationTranscript = httpAction(async (ctx: ActionCtx, request: Request) => {
+  const token = parseBearerToken(request);
+  if (!token) return unauthorized('AUTH_FAILED', 'Missing bearer token');
+
+  const verified = await verifyBotToken(ctx, token);
+  if (!verified.valid) return unauthorized(verified.code, verified.message);
+
+  let body: any;
+  try {
+    body = await request.json();
+  } catch (e: any) {
+    const message = String(e?.message ?? 'Request body is not valid JSON');
+    return badRequest('INVALID_JSON', message);
+  }
+
+  const worldId = body?.worldId;
+  const conversationIdRaw = body?.conversationId;
+  const maxMessagesRaw = body?.maxMessages;
+  const orderRaw = body?.order;
+
+  if (!worldId || typeof worldId !== 'string') {
+    return badRequest('INVALID_ARGS', 'Missing worldId');
+  }
+  if (!conversationIdRaw || typeof conversationIdRaw !== 'string') {
+    return badRequest('INVALID_ARGS', 'Missing conversationId');
+  }
+  if (worldId !== String(verified.binding.worldId)) {
+    return unauthorized('AUTH_FAILED', 'worldId mismatch');
+  }
+
+  const conversationId = conversationIdRaw.trim();
+  if (!conversationId) {
+    return badRequest('INVALID_ARGS', 'Missing conversationId');
+  }
+
+  const maxMessages = maxMessagesRaw === undefined ? 80 : Number(maxMessagesRaw);
+  if (!Number.isInteger(maxMessages) || maxMessages <= 0 || maxMessages > 300) {
+    return badRequest('INVALID_ARGS', 'maxMessages must be an integer between 1 and 300');
+  }
+
+  const order = orderRaw === undefined ? 'asc' : orderRaw;
+  if (order !== 'asc' && order !== 'desc') {
+    return badRequest('INVALID_ARGS', 'order must be asc or desc');
+  }
+
+  try {
+    const transcript = await ctx.runQuery((api as any).botApi.getConversationTranscript as any, {
+      worldId: verified.binding.worldId,
+      conversationId,
+      requesterPlayerId: verified.binding.playerId,
+      maxMessages,
+      order,
+    });
+
+    if (!transcript?.ok) {
+      if (transcript?.code === 'FORBIDDEN') {
+        return unauthorized('AUTH_FAILED', 'playerId mismatch');
+      }
+      return badRequest('NOT_FOUND', 'Conversation not found');
+    }
+
+    return jsonResponse({
+      ok: true,
+      conversation: transcript.conversation,
+      messages: transcript.messages,
+      truncated: transcript.truncated,
+      returnedCount: transcript.returnedCount,
+    });
+  } catch (e: any) {
+    const message = String(e?.message ?? e);
+    return badRequest('INVALID_ARGS', message);
+  }
+});
+
 export const postSocialAffinity = httpAction(async (ctx: ActionCtx, request: Request) => {
   const token = parseBearerToken(request);
   if (!token) return unauthorized('AUTH_FAILED', 'Missing bearer token');
@@ -1182,6 +1341,12 @@ export const postMemoryInject = httpAction(async (ctx: ActionCtx, request: Reque
   const summary = body?.summary;
   const importance = body?.importance;
   const memoryType = body?.memoryType;
+  const conversationId = body?.conversationId;
+  const counterpartPlayerIds = body?.counterpartPlayerIds;
+  const transcriptDigest = body?.transcriptDigest;
+  const transcriptMessageCount = body?.transcriptMessageCount;
+  const sourceEventId = body?.sourceEventId;
+  const externalKey = body?.externalKey;
 
   if (!agentId || typeof agentId !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing agentId');
@@ -1199,6 +1364,30 @@ export const postMemoryInject = httpAction(async (ctx: ActionCtx, request: Reque
   if (memoryType !== undefined && typeof memoryType !== 'string') {
     return badRequest('INVALID_ARGS', 'memoryType must be a string');
   }
+  if (conversationId !== undefined && typeof conversationId !== 'string') {
+    return badRequest('INVALID_ARGS', 'conversationId must be a string');
+  }
+  if (
+    counterpartPlayerIds !== undefined &&
+    (!Array.isArray(counterpartPlayerIds) || counterpartPlayerIds.some((id) => typeof id !== 'string'))
+  ) {
+    return badRequest('INVALID_ARGS', 'counterpartPlayerIds must be an array of strings');
+  }
+  if (transcriptDigest !== undefined && typeof transcriptDigest !== 'string') {
+    return badRequest('INVALID_ARGS', 'transcriptDigest must be a string');
+  }
+  if (
+    transcriptMessageCount !== undefined &&
+    (typeof transcriptMessageCount !== 'number' || !Number.isFinite(transcriptMessageCount))
+  ) {
+    return badRequest('INVALID_ARGS', 'transcriptMessageCount must be a number');
+  }
+  if (sourceEventId !== undefined && typeof sourceEventId !== 'string') {
+    return badRequest('INVALID_ARGS', 'sourceEventId must be a string');
+  }
+  if (externalKey !== undefined && typeof externalKey !== 'string') {
+    return badRequest('INVALID_ARGS', 'externalKey must be a string');
+  }
 
   try {
     await ctx.runAction((internal as any).agent.memory.insertExternalMemory as any, {
@@ -1208,6 +1397,12 @@ export const postMemoryInject = httpAction(async (ctx: ActionCtx, request: Reque
       summary,
       importance,
       memoryType,
+      conversationId,
+      counterpartPlayerIds,
+      transcriptDigest,
+      transcriptMessageCount,
+      sourceEventId,
+      externalKey,
     });
   } catch (e: any) {
     const message = String(e?.message ?? e);
