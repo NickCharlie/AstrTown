@@ -1,8 +1,13 @@
-import { mutation, query } from './_generated/server';
-import { Id } from './_generated/dataModel';
+import { MutationCtx, QueryCtx, mutation, query } from './_generated/server';
+import { Doc, Id } from './_generated/dataModel';
 import { v } from 'convex/values';
 import { frameConfig, occupiedTile } from './aiTown/mapObjectCatalog';
-import { semanticObjectInstance, semanticZone, zoneBounds } from './aiTown/worldSemantic';
+import {
+  SemanticZone,
+  semanticObjectInstance,
+  semanticZone,
+  zoneBounds,
+} from './aiTown/worldSemantic';
 
 function buildNextVersion(currentVersion: number | undefined, requestedVersion: number | undefined) {
   if (requestedVersion !== undefined) {
@@ -38,23 +43,35 @@ function assertZonesReferenceValidInstances(
   }
 }
 
-async function assertWorldExists(ctx: { db: any }, worldId: Id<'worlds'>) {
+type DbReadableCtx = Pick<QueryCtx, 'db'> | Pick<MutationCtx, 'db'>;
+type CatalogDoc = Doc<'mapObjectCatalog'>;
+type WorldSemanticDoc = Doc<'worldSemantic'>;
+type ZoneCard = {
+  zoneId: string;
+  name: string;
+  description: string;
+  priority: number;
+  editedAt: number;
+  bounds: SemanticZone['bounds'];
+  suggestedActivities: string[];
+};
+
+async function assertWorldExists(ctx: DbReadableCtx, worldId: Id<'worlds'>) {
   const world = await ctx.db.get(worldId);
   if (!world) {
     throw new Error(`world 不存在: ${worldId}`);
   }
 }
 
-async function getCatalogByKey(ctx: { db: any }, key: string) {
-  const db = ctx.db as any;
-  return await db
+async function getCatalogByKey(ctx: DbReadableCtx, key: string): Promise<CatalogDoc | null> {
+  return await ctx.db
     .query('mapObjectCatalog')
-    .withIndex('key', (q: any) => q.eq('key', key))
+    .withIndex('key', (q) => q.eq('key', key))
     .unique();
 }
 
 async function assertCatalogKeysEnabled(
-  ctx: { db: any },
+  ctx: DbReadableCtx,
   objectInstances: Array<{ catalogKey: string }>,
 ) {
   const keys = Array.from(new Set(objectInstances.map((item) => item.catalogKey)));
@@ -69,11 +86,13 @@ async function assertCatalogKeysEnabled(
   }
 }
 
-async function getWorldSemanticDoc(ctx: { db: any }, worldId: Id<'worlds'>) {
-  const db = ctx.db as any;
-  return await db
+async function getWorldSemanticDoc(
+  ctx: DbReadableCtx,
+  worldId: Id<'worlds'>,
+): Promise<WorldSemanticDoc | null> {
+  return await ctx.db
     .query('worldSemantic')
-    .withIndex('worldId', (q: any) => q.eq('worldId', worldId))
+    .withIndex('worldId', (q) => q.eq('worldId', worldId))
     .unique();
 }
 
@@ -137,10 +156,9 @@ function buildCoordinateIndex(
 
 export const listCatalogObjects = query({
   handler: async (ctx) => {
-    const db = ctx.db as any;
-    return await db
+    return await ctx.db
       .query('mapObjectCatalog')
-      .filter((q: any) => q.eq(q.field('enabled'), true))
+      .filter((q) => q.eq(q.field('enabled'), true))
       .collect();
   },
 });
@@ -182,7 +200,7 @@ export const createCatalogObject = mutation({
     }
 
     const now = Date.now();
-    return await (ctx.db as any).insert('mapObjectCatalog', {
+    return await ctx.db.insert('mapObjectCatalog', {
       key,
       name: args.name.trim(),
       category: args.category.trim(),
@@ -224,7 +242,8 @@ export const updateCatalogObject = mutation({
       throw new Error(`key 不存在: ${args.key}`);
     }
 
-    const patch: Record<string, any> = {
+    const patch: Partial<Doc<'mapObjectCatalog'>> &
+      Pick<Doc<'mapObjectCatalog'>, 'updatedAt' | 'version'> = {
       updatedAt: Date.now(),
       version: buildNextVersion(existing.version, args.version),
     };
@@ -313,7 +332,7 @@ export const upsertWorldSemantic = mutation({
       return existing._id;
     }
 
-    return await (ctx.db as any).insert('worldSemantic', {
+    return await ctx.db.insert('worldSemantic', {
       worldId: args.worldId,
       version: args.version ?? 1,
       updatedAt: now,
@@ -346,7 +365,7 @@ export const addObjectInstance = mutation({
     };
 
     if (existing) {
-      if (existing.objectInstances.some((instance: any) => instance.instanceId === args.instanceId)) {
+      if (existing.objectInstances.some((instance) => instance.instanceId === args.instanceId)) {
         throw new Error(`instanceId 已存在: ${args.instanceId}`);
       }
       await ctx.db.patch(existing._id, {
@@ -357,7 +376,7 @@ export const addObjectInstance = mutation({
       return existing._id;
     }
 
-    return await (ctx.db as any).insert('worldSemantic', {
+    return await ctx.db.insert('worldSemantic', {
       worldId: args.worldId,
       version: 1,
       updatedAt: Date.now(),
@@ -379,14 +398,14 @@ export const removeObjectInstance = mutation({
     }
 
     const nextObjectInstances = existing.objectInstances.filter(
-      (instance: any) => instance.instanceId !== args.instanceId,
+      (instance) => instance.instanceId !== args.instanceId,
     );
 
     if (nextObjectInstances.length === existing.objectInstances.length) {
       throw new Error(`instanceId 不存在: ${args.instanceId}`);
     }
 
-    const nextZones = existing.zones.map((zone: any) => {
+    const nextZones = existing.zones.map((zone) => {
       if (!zone.containedInstanceIds) {
         return zone;
       }
@@ -437,7 +456,7 @@ export const addZone = mutation({
 
     const existing = await getWorldSemanticDoc(ctx, args.worldId);
     if (existing) {
-      if (existing.zones.some((zone: any) => zone.zoneId === args.zoneId)) {
+      if (existing.zones.some((zone) => zone.zoneId === args.zoneId)) {
         throw new Error(`zoneId 已存在: ${args.zoneId}`);
       }
 
@@ -454,7 +473,7 @@ export const addZone = mutation({
 
     assertZonesReferenceValidInstances([nextZone], []);
 
-    return await (ctx.db as any).insert('worldSemantic', {
+    return await ctx.db.insert('worldSemantic', {
       worldId: args.worldId,
       version: 1,
       updatedAt: Date.now(),
@@ -482,7 +501,7 @@ export const updateZone = mutation({
       throw new Error(`worldSemantic 不存在: ${args.worldId}`);
     }
 
-    const zoneIndex = existing.zones.findIndex((zone: any) => zone.zoneId === args.zoneId);
+    const zoneIndex = existing.zones.findIndex((zone) => zone.zoneId === args.zoneId);
     if (zoneIndex < 0) {
       throw new Error(`zoneId 不存在: ${args.zoneId}`);
     }
@@ -531,7 +550,7 @@ export const removeZone = mutation({
       throw new Error(`worldSemantic 不存在: ${args.worldId}`);
     }
 
-    const nextZones = existing.zones.filter((zone: any) => zone.zoneId !== args.zoneId);
+    const nextZones = existing.zones.filter((zone) => zone.zoneId !== args.zoneId);
     if (nextZones.length === existing.zones.length) {
       throw new Error(`zoneId 不存在: ${args.zoneId}`);
     }
@@ -551,10 +570,9 @@ export const getSemanticSnapshot = query({
     worldId: v.id('worlds'),
   },
   handler: async (ctx, args) => {
-    const db = ctx.db as any;
-    const worldMap = await db
+    const worldMap = await ctx.db
       .query('maps')
-      .withIndex('worldId', (q: any) => q.eq('worldId', args.worldId))
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
       .first();
 
     if (!worldMap) {
@@ -565,31 +583,33 @@ export const getSemanticSnapshot = query({
     const objectInstances = semanticDoc?.objectInstances ?? [];
     const zones = semanticDoc?.zones ?? [];
 
-    const enabledCatalogs = await db
+    const enabledCatalogs = await ctx.db
       .query('mapObjectCatalog')
-      .filter((q: any) => q.eq(q.field('enabled'), true))
+      .filter((q) => q.eq(q.field('enabled'), true))
       .collect();
-    const catalogByKey = new Map<string, any>(enabledCatalogs.map((item: any) => [item.key, item]));
+    const catalogByKey = new Map<string, CatalogDoc>(
+      enabledCatalogs.map((item) => [item.key, item]),
+    );
 
-    const zoneCards = [...zones]
-      .sort((a: any, b: any) => {
-        const priorityDelta = (Number(b?.priority) || 0) - (Number(a?.priority) || 0);
+    const zoneCards: ZoneCard[] = [...zones]
+      .sort((a, b) => {
+        const priorityDelta = b.priority - a.priority;
         if (priorityDelta !== 0) {
           return priorityDelta;
         }
-        return (Number(b?.editedAt) || 0) - (Number(a?.editedAt) || 0);
+        return b.editedAt - a.editedAt;
       })
-      .map((zone: any) => ({
+      .map((zone) => ({
         zoneId: zone.zoneId,
         name: zone.name,
         description: zone.description,
         priority: zone.priority,
-        editedAt: Number(zone.editedAt) || 0,
+        editedAt: zone.editedAt,
         bounds: zone.bounds,
         suggestedActivities: zone.suggestedActivities ?? [],
       }));
 
-    const objectCards = objectInstances.map((instance: any) => {
+    const objectCards = objectInstances.map((instance) => {
       const catalog = catalogByKey.get(instance.catalogKey);
       return {
         instanceId: instance.instanceId,

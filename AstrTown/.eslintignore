@@ -5,3 +5,5 @@ tailwind.config.js
 postcss.config.js
 convex/_generated/*
 dist/*
+src/editor/*.js
+data/*.js

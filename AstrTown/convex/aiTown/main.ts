@@ -6,6 +6,13 @@ import { internal } from '../_generated/api';
 import { sleep } from '../util/sleep';
 import { Id } from '../_generated/dataModel';
 import { ENGINE_ACTION_DURATION } from '../constants';
+import type { InputArgs, InputNames } from './inputs';
+
+type EngineStopReason = 'engineNotRunning' | 'generationNumber';
+
+function isEngineStopReason(kind: unknown): kind is EngineStopReason {
+  return kind === 'engineNotRunning' || kind === 'generationNumber';
+}
 
 export async function createEngine(ctx: MutationCtx) {
   const now = Date.now();
@@ -115,11 +122,12 @@ export const runStep = internalAction({
       });
     } catch (e: unknown) {
       if (e instanceof ConvexError) {
-        if (e.data.kind === 'engineNotRunning') {
-          console.debug(`Engine is not running: ${e.message}`);
-          return;
-        }
-        if (e.data.kind === 'generationNumber') {
+        const errorData = e.data as { kind?: unknown };
+        if (isEngineStopReason(errorData.kind)) {
+          if (errorData.kind === 'engineNotRunning') {
+            console.debug(`Engine is not running: ${e.message}`);
+            return;
+          }
           console.debug(`Generation number mismatch: ${e.message}`);
           return;
         }
@@ -136,7 +144,9 @@ export const sendInput = mutation({
     args: v.any(),
   },
   handler: async (ctx, args) => {
-    return await insertInput(ctx, args.worldId, args.name as any, args.args);
+    const inputName = args.name as InputNames;
+    const inputArgs = args.args as InputArgs<typeof inputName>;
+    return await insertInput(ctx, args.worldId, inputName, inputArgs);
   },
 });
 

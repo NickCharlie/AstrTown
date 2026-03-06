@@ -1,7 +1,8 @@
 import { v } from 'convex/values';
-import type { Id } from '../_generated/dataModel';
-import { internal, api } from '../_generated/api';
+import type { Doc, Id } from '../_generated/dataModel';
+import { internal } from '../_generated/api';
 import { internalAction, internalQuery } from '../_generated/server';
+import type { ActionCtx } from '../_generated/server';
 import { EXTERNAL_QUEUE_PREFETCH_TIMEOUT } from '../constants';
 
 export type GatewayEventType =
@@ -16,9 +17,26 @@ export type GatewayEventType =
 
 export type GatewayEventPriority = 0 | 1 | 2 | 3;
 
+type WorldDoc = Doc<'worlds'>;
+type GlobalWithProcessEnv = typeof globalThis & {
+  process?: {
+    env?: Record<string, string | undefined>;
+  };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function requireEnv(name: string): string {
-  const value = (globalThis as any)?.process?.env?.[name];
-  if (!value || value.length === 0) throw new Error(`Missing env var ${name}`);
+  const value = (globalThis as GlobalWithProcessEnv).process?.env?.[name];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Missing env var ${name}`);
+  }
   return value;
 }
 
@@ -33,8 +51,8 @@ const EVENT_TTL_MS: Partial<Record<GatewayEventType, number>> = {
   'agent.queue_refill_requested': EXTERNAL_QUEUE_PREFETCH_TIMEOUT,
 };
 
-function computeExpiresAt(eventType: GatewayEventType | string, now: number): number {
-  const ttlMs = EVENT_TTL_MS[eventType as GatewayEventType] ?? 60_000;
+function computeExpiresAt(eventType: GatewayEventType, now: number): number {
+  const ttlMs = EVENT_TTL_MS[eventType] ?? 60_000;
   return now + ttlMs;
 }
 
@@ -48,6 +66,14 @@ function buildIdempotencyKey(args: {
   return `${args.eventType}:${args.worldId}:${args.eventAgentId}:${args.targetAgentId}:${args.eventTs}`;
 }
 
+type ConversationDoc = WorldDoc['conversations'][number];
+
+function findConversationById(world: WorldDoc, conversationId: string): ConversationDoc | undefined {
+  return world.conversations.find(
+    (conversation) => String(conversation.id) === String(conversationId),
+  );
+}
+
 export const pushEventToGateway = internalAction({
   args: {
     eventType: v.string(),
@@ -59,19 +85,7 @@ export const pushEventToGateway = internalAction({
     expiresAt: v.number(),
     idempotencyKey: v.string(),
   },
-  handler: async (
-    _ctx: any,
-    args: {
-      eventType: string;
-      eventAgentId: string;
-      targetAgentId: string;
-      worldId: string;
-      payload: unknown;
-      priority: GatewayEventPriority;
-      expiresAt: number;
-      idempotencyKey: string;
-    },
-  ) => {
+  handler: async (_ctx, args) => {
     const gatewayUrl = requireEnv('GATEWAY_URL');
     const secret = requireEnv('GATEWAY_SECRET');
 
@@ -105,10 +119,25 @@ export const pushEventToGateway = internalAction({
           eventData: args.payload,
           eventTs: Date.now(),
           idempotencyKey: args.idempotencyKey,
+        } satisfies {
+          eventType: string;
+          eventAgentId: string;
+          targetAgentId: string;
+          worldId: string;
+          payload: unknown;
+          priority: GatewayEventPriority;
+          expiresAt: number;
+          agentId: string;
+          eventData: unknown;
+          eventTs: number;
+          idempotencyKey: string;
         }),
       });
-    } catch (e: any) {
-      console.error('Gateway push network failure', { ...eventContext, error: String(e?.message ?? e) });
+    } catch (error: unknown) {
+      console.error('Gateway push network failure', {
+        ...eventContext,
+        error: toErrorMessage(error),
+      });
       throw new Error(
         `Gateway push network failure (eventType=${args.eventType}, eventAgentId=${args.eventAgentId}, targetAgentId=${args.targetAgentId})`,
       );
@@ -135,11 +164,7 @@ export const listExternalControlledAgentIds = internalQuery({
   handler: async (ctx, args) => {
     const world = await ctx.db.get(args.worldId);
     if (!world) return [];
-    const agents = (world as any).agents;
-    if (!Array.isArray(agents)) return [];
-    return agents
-      .filter((a: any) => typeof a?.id === 'string')
-      .map((a: any) => a.id as string);
+    return world.agents.map((agent) => agent.id);
   },
 });
 
@@ -152,30 +177,14 @@ export const listExternalControlledAgentIdsByConversation = internalQuery({
     const world = await ctx.db.get(args.worldId);
     if (!world) return [];
 
-    const conversations = (world as any).conversations;
-    if (!Array.isArray(conversations)) return [];
-
-    const conversation = conversations.find((c: any) => String(c?.id) === String(args.conversationId));
+    const conversation = findConversationById(world, args.conversationId);
     if (!conversation) return [];
 
-    const participants = (conversation as any).participants;
-    if (!Array.isArray(participants)) return [];
+    const participantPlayerIds = conversation.participants.map((member) => member.playerId);
 
-    const participantPlayerIds = participants
-      .map((m: any) => m?.playerId)
-      .filter((pId: any) => typeof pId === 'string');
-
-    const agents = (world as any).agents;
-    if (!Array.isArray(agents)) return [];
-
-    return agents
-      .filter(
-        (a: any) =>
-          typeof a?.id === 'string' &&
-          typeof a?.playerId === 'string' &&
-          participantPlayerIds.includes(a.playerId),
-      )
-      .map((a: any) => a.id as string);
+    return world.agents
+      .filter((agent) => participantPlayerIds.includes(agent.playerId))
+      .map((agent) => agent.id);
   },
 });
 
@@ -189,46 +198,36 @@ export const listExternalControlledAgentIdsByInvitedPlayer = internalQuery({
     const world = await ctx.db.get(args.worldId);
     if (!world) return [];
 
-    const conversations = (world as any).conversations;
-    if (!Array.isArray(conversations)) return [];
-
-    const conversation = conversations.find((c: any) => String(c?.id) === String(args.conversationId));
+    const conversation = findConversationById(world, args.conversationId);
     if (!conversation) return [];
-
-    const participants = (conversation as any).participants;
-    if (!Array.isArray(participants)) return [];
 
     // 对于 conversation.invited：只投递给“被邀请的那一方”。
     // 数据里现有字段只有 inviterId（邀请者），因此从 participants 中排除 inviterId 来定位 invitee。
-    const inviteePlayerId = participants
-      .map((m: any) => m?.playerId)
-      .find((pId: any) => typeof pId === 'string' && String(pId) !== String(args.inviterId));
+    const inviteePlayerId = conversation.participants
+      .map((member) => member.playerId)
+      .find((participantPlayerId) => String(participantPlayerId) !== String(args.inviterId));
 
     if (!inviteePlayerId) return [];
 
-    const agents = (world as any).agents;
-    if (!Array.isArray(agents)) return [];
-
-    return agents
-      .filter(
-        (a: any) =>
-          typeof a?.id === 'string' &&
-          typeof a?.playerId === 'string' &&
-          String(a.playerId) === String(inviteePlayerId),
-      )
-      .map((a: any) => a.id as string);
+    return world.agents
+      .filter((agent) => String(agent.playerId) === String(inviteePlayerId))
+      .map((agent) => agent.id);
   },
 });
 
 function getConversationIdFromPayload(payload: unknown): string | null {
-  const p: any = payload;
-  const conversationId = p?.conversationId;
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const conversationId = payload.conversationId;
   return typeof conversationId === 'string' ? conversationId : null;
 }
 
 function getInviterIdFromPayload(payload: unknown): string | null {
-  const p: any = payload;
-  const inviterId = p?.inviterId;
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const inviterId = payload.inviterId;
   return typeof inviterId === 'string' ? inviterId : null;
 }
 
@@ -393,19 +392,16 @@ export function buildAgentQueueRefillRequestedEvent(
   };
 }
 
-export async function scheduleEventPush(
-  ctx: {
-    scheduler: { runAfter: (delayMs: number, ref: any, args: any) => Promise<any> };
-    runQuery: (ref: any, args: any) => Promise<any>;
-  },
-  args: {
-    eventType: GatewayEventType;
-    eventAgentId: string;
-    worldId: Id<'worlds'>;
-    payload: unknown;
-    priority: GatewayEventPriority;
-  },
-) {
+type ScheduleEventPushCtx = Pick<ActionCtx, 'scheduler' | 'runQuery'>;
+type ScheduleEventPushArgs = {
+  eventType: GatewayEventType;
+  eventAgentId: string;
+  worldId: Id<'worlds'>;
+  payload: unknown;
+  priority: GatewayEventPriority;
+};
+
+export async function scheduleEventPush(ctx: ScheduleEventPushCtx, args: ScheduleEventPushArgs) {
   let targetAgentIds: string[];
 
   if (args.eventType === 'conversation.ended') {
@@ -416,8 +412,9 @@ export async function scheduleEventPush(
     const conversationId = getConversationIdFromPayload(args.payload);
     const inviterId = getInviterIdFromPayload(args.payload);
     if (!conversationId || !inviterId) {
+      const payloadKeys = isRecord(args.payload) ? Object.keys(args.payload).join(',') : '';
       console.warn(
-        `[WorldEventDispatcher] conversation.invited 缺少必要字段, 将跳过定向投递: worldId=${args.worldId}, eventAgentId=${args.eventAgentId}, payloadKeys=${Object.keys((args.payload as any) ?? {}).join(',')}`,
+        `[WorldEventDispatcher] conversation.invited 缺少必要字段, 将跳过定向投递: worldId=${args.worldId}, eventAgentId=${args.eventAgentId}, payloadKeys=${payloadKeys}`,
       );
       targetAgentIds = [];
     } else {
@@ -446,7 +443,7 @@ export async function scheduleEventPush(
     );
   }
 
-  if (!Array.isArray(targetAgentIds) || targetAgentIds.length === 0) {
+  if (targetAgentIds.length === 0) {
     console.log(`[WorldEventDispatcher] 跳过事件推送: 无目标外控agent, 事件类型: ${args.eventType}, worldId: ${args.worldId}`);
     return;
   }
@@ -454,7 +451,7 @@ export async function scheduleEventPush(
   const now = Date.now();
   const expiresAt = computeExpiresAt(args.eventType, now);
 
-  for (const targetAgentId of targetAgentIds as string[]) {
+  for (const targetAgentId of targetAgentIds) {
     const idempotencyKey = buildIdempotencyKey({
       eventType: args.eventType,
       eventAgentId: String(args.eventAgentId),
@@ -486,7 +483,7 @@ export const scheduleConversationStarted = internalAction({
     otherParticipantIds: v.array(v.string()),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildConversationStartedEvent(
       String(args.worldId),
       String(args.agentId),
@@ -512,7 +509,7 @@ export const scheduleConversationInvited = internalAction({
     inviterName: v.optional(v.string()),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildConversationInvitedEvent(
       String(args.worldId),
       String(args.agentId),
@@ -539,7 +536,7 @@ export const scheduleConversationMessage = internalAction({
     speakerId: v.string(),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildConversationMessageEvent(
       String(args.worldId),
       String(args.agentId),
@@ -566,7 +563,7 @@ export const scheduleConversationEnded = internalAction({
     otherParticipantName: v.optional(v.string()),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildConversationEndedEvent(
       String(args.worldId),
       String(args.agentId),
@@ -592,7 +589,7 @@ export const scheduleConversationTimeout = internalAction({
     reason: v.union(v.literal('invite_timeout'), v.literal('idle_timeout')),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildConversationTimeoutEvent(
       String(args.worldId),
       String(args.agentId),
@@ -619,7 +616,7 @@ export const scheduleAgentStateChanged = internalAction({
     nearbyPlayers: v.any(),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildAgentStateChangedEvent(
       String(args.worldId),
       String(args.agentId),
@@ -646,7 +643,7 @@ export const scheduleActionFinished = internalAction({
     resultData: v.any(),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildActionFinishedEvent(
       String(args.worldId),
       String(args.agentId),
@@ -675,7 +672,7 @@ export const scheduleAgentQueueRefillRequested = internalAction({
     nearbyPlayers: v.any(),
     priority: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const built = buildAgentQueueRefillRequestedEvent(
       String(args.worldId),
       String(args.agentId),

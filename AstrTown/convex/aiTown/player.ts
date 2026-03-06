@@ -1,5 +1,5 @@
 import { Infer, ObjectType, v } from 'convex/values';
-import { Point, Vector, path, point, vector } from '../util/types';
+import { Path, Point, Vector, path, point, vector } from '../util/types';
 import { GameId, parseGameId } from './ids';
 import { playerId } from './ids';
 import {
@@ -91,17 +91,16 @@ export class Player {
     }
 
     // ===== activity 超时完成结算 =====
-    const player = this;
-    if (player.activity && now >= player.activity.until) {
-      const finishedActionId = player.activity.actionId;
-      player.activity = undefined;
+    if (this.activity && now >= this.activity.until) {
+      const finishedActionId = this.activity.actionId;
+      this.activity = undefined;
 
       // pendingOperations 的 eventId 可能不允许 undefined；没有 actionId 时不推送
       if (finishedActionId !== undefined) {
         game.pendingOperations.push({
           name: 'action.finished',
           args: {
-            agentId: player.id,
+            agentId: this.id,
             actionType: 'activity',
             success: true,
             result: { reason: 'activity_completed', eventId: finishedActionId },
@@ -167,7 +166,7 @@ export class Player {
 
     // Compute a candidate new position and check if it collides
     // with anything.
-    const candidate = pathPosition(this.pathfinding.state.path as any, now);
+    const candidate = pathPosition(this.pathfinding.state.path as Path, now);
     if (!candidate) {
       console.warn(`Path out of range of ${now} for ${this.id}`);
       return;

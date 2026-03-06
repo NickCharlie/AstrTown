@@ -25,6 +25,87 @@ import { internal } from '../_generated/api';
 import { HistoricalObject } from '../engine/historicalObject';
 import { parseMap, serializeMap } from '../util/object';
 
+function hasName(value: unknown): value is { name: string } {
+  return typeof value === 'object' && value !== null && 'name' in value;
+}
+
+type PendingOperation =
+  | {
+      name: 'agentRememberConversation';
+      args: {
+        operationId: string;
+        worldId: Id<'worlds'>;
+        playerId: string;
+        agentId: string;
+        conversationId: string;
+      };
+    }
+  | {
+      name: 'conversationStarted';
+      args: {
+        agentId: string;
+        worldId: Id<'worlds'>;
+        conversationId: string;
+        otherParticipantIds: string[];
+      };
+    }
+  | {
+      name: 'conversation.invited';
+      args: {
+        agentId: string;
+        worldId: Id<'worlds'>;
+        conversationId: string;
+        inviterId: string;
+        inviterName?: string;
+      };
+    }
+  | {
+      name: 'conversation.message';
+      args: {
+        agentId: string;
+        worldId: Id<'worlds'>;
+        conversationId: string;
+        messageContent: string;
+        speakerId: string;
+      };
+    }
+  | {
+      name: 'conversation.ended';
+      args: {
+        agentId: string;
+        worldId: Id<'worlds'>;
+        conversationId: string;
+        otherParticipantId?: string;
+        otherParticipantName?: string;
+      };
+    }
+  | {
+      name: 'conversation.timeout';
+      args: {
+        agentId: string;
+        worldId?: Id<'worlds'>;
+        conversationId: string;
+        reason: 'invite_timeout' | 'idle_timeout';
+      };
+    }
+  | {
+      name: 'action.finished';
+      args: {
+        agentId: string;
+        actionType: string;
+        success: boolean;
+        result?: unknown;
+        resultData?: unknown;
+      };
+    }
+  | {
+      name: 'agentStateChangedIdle' | 'agentStateChangedInConversation';
+      args: {
+        agentId: string;
+        worldId: Id<'worlds'>;
+      };
+    };
+
 const gameState = v.object({
   world: v.object(serializedWorld),
   playerDescriptions: v.array(v.object(serializedPlayerDescription)),
@@ -38,7 +119,10 @@ const gameStateDiff = v.object({
   worldMap: v.optional(v.object(serializedWorldMap)),
   agentOperations: v.array(v.object({ name: v.string(), args: v.any() })),
 });
-type GameStateDiff = Infer<typeof gameStateDiff>;
+type RawGameStateDiff = Infer<typeof gameStateDiff>;
+type GameStateDiff = Omit<RawGameStateDiff, 'agentOperations'> & {
+  agentOperations: PendingOperation[];
+};
 
 export class Game extends AbstractGame {
   tickDuration = 16;
@@ -54,7 +138,7 @@ export class Game extends AbstractGame {
   worldMap: WorldMap;
   playerDescriptions: Map<GameId<'players'>, PlayerDescription>;
 
-  pendingOperations: Array<{ name: string; args: any }> = [];
+  pendingOperations: PendingOperation[] = [];
 
   numPathfinds: number;
 
@@ -135,16 +219,17 @@ export class Game extends AbstractGame {
     return id;
   }
 
-  scheduleOperation(name: string, args: unknown) {
-    this.pendingOperations.push({ name, args });
+  scheduleOperation(operation: PendingOperation) {
+    this.pendingOperations.push(operation);
   }
 
-  handleInput<Name extends InputNames>(now: number, name: Name, args: InputArgs<Name>) {
-    const handler = inputs[name]?.handler;
+  handleInput(now: number, name: string, args: object) {
+    const handler = inputs[name as InputNames]?.handler;
     if (!handler) {
       throw new Error(`Invalid input: ${name}`);
     }
-    return handler(this, now, args as any);
+    // 输入来自引擎队列，按名称分发到对应处理器；这里仅做类型桥接。
+    return handler(this, now, args as never);
   }
 
   beginStep(_now: number) {
@@ -195,7 +280,7 @@ export class Game extends AbstractGame {
     });
   }
 
-  takeDiff(): GameStateDiff {
+  takeDiff(): RawGameStateDiff {
     const historicalLocations = [];
     let bufferSize = 0;
     for (const [id, historicalObject] of this.historicalLocations.entries()) {
@@ -215,7 +300,7 @@ export class Game extends AbstractGame {
     }
     this.historicalLocations.clear();
 
-    const result: GameStateDiff = {
+    const result: RawGameStateDiff = {
       world: { ...this.world.serialize(), historicalLocations },
       agentOperations: this.pendingOperations,
     };
@@ -228,11 +313,12 @@ export class Game extends AbstractGame {
     return result;
   }
 
-  static async saveDiff(ctx: MutationCtx, worldId: Id<'worlds'>, diff: GameStateDiff) {
+  static async saveDiff(ctx: MutationCtx, worldId: Id<'worlds'>, rawDiff: RawGameStateDiff) {
     const existingWorld = await ctx.db.get(worldId);
     if (!existingWorld) {
       throw new Error(`No world found with id ${worldId}`);
     }
+    const diff = rawDiff as GameStateDiff;
     const newWorld = diff.world;
     for (const player of existingWorld.players) {
       if (!newWorld.players.some((p) => p.id === player.id)) {
@@ -302,7 +388,7 @@ export class Game extends AbstractGame {
             .filter((p) => p.id !== player.id)
             .map((p) => ({
               id: p.id,
-              name: (p as any).name,
+              name: hasName(p) ? p.name : '',
               position: p.position,
             }))
         : [];
@@ -348,10 +434,8 @@ export class Game extends AbstractGame {
       }
     }
 
-    const AGENT_ASYNC_OPERATIONS = new Set(['agentRememberConversation']);
-
     for (const operation of diff.agentOperations) {
-      if (AGENT_ASYNC_OPERATIONS.has(operation.name)) {
+      if (operation.name === 'agentRememberConversation') {
         await runAgentOperation(ctx, operation.name, operation.args);
       }
     }
@@ -379,15 +463,15 @@ export class Game extends AbstractGame {
           });
           break;
         case 'conversation.message':
-           await ctx.scheduler.runAfter(0, internal.aiTown.worldEventDispatcher.scheduleConversationMessage, {
-             worldId,
-             agentId: operation.args.agentId,
-             conversationId: operation.args.conversationId,
-             messageContent: operation.args.messageContent,
-             speakerId: operation.args.speakerId,
-             priority: 0,
-           });
-           break;
+          await ctx.scheduler.runAfter(0, internal.aiTown.worldEventDispatcher.scheduleConversationMessage, {
+            worldId,
+            agentId: operation.args.agentId,
+            conversationId: operation.args.conversationId,
+            messageContent: operation.args.messageContent,
+            speakerId: operation.args.speakerId,
+            priority: 0,
+          });
+          break;
         case 'conversation.ended':
           await ctx.scheduler.runAfter(0, internal.aiTown.worldEventDispatcher.scheduleConversationEnded, {
             worldId,
@@ -413,25 +497,25 @@ export class Game extends AbstractGame {
             agentId: operation.args.agentId,
             actionType: operation.args.actionType,
             success: operation.args.success,
-            resultData: operation.args.resultData,
+            resultData: operation.args.resultData ?? operation.args.result,
             priority: 0,
           });
           break;
         case 'agentStateChangedIdle':
         case 'agentStateChangedInConversation': {
-          const agent = newWorld.agents.find((a) => a.id === operation.args.agentId);
-          const player = agent && newWorld.players.find((p) => p.id === agent.playerId);
+          const agent = newWorld.agents.find((agentItem) => agentItem.id === operation.args.agentId);
+          const player = agent && newWorld.players.find((playerItem) => playerItem.id === agent.playerId);
           if (!player) {
             break;
           }
 
           const position = player.position;
           const nearbyPlayers = newWorld.players
-            .filter((p) => p.id !== player.id)
-            .map((p) => ({
-              id: p.id,
-              name: (p as any).name,
-              position: p.position,
+            .filter((playerItem) => playerItem.id !== player.id)
+            .map((playerItem) => ({
+              id: playerItem.id,
+              name: hasName(playerItem) ? playerItem.name : '',
+              position: playerItem.position,
             }));
 
           await ctx.scheduler.runAfter(0, internal.aiTown.worldEventDispatcher.scheduleAgentStateChanged, {
@@ -444,7 +528,7 @@ export class Game extends AbstractGame {
           });
           break;
         }
-        default:
+        case 'agentRememberConversation':
           break;
       }
     }

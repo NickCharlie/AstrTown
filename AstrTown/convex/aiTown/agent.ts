@@ -24,6 +24,37 @@ import { distance } from '../util/geometry';
 import { internal } from '../_generated/api';
 import { blockedWithPositions, movePlayer, stopPlayer } from './movement';
 
+type ExternalEventArgs = Record<string, unknown>;
+
+type GridPoint = {
+  x: number;
+  y: number;
+};
+
+function isRecord(value: unknown): value is ExternalEventArgs {
+  return typeof value === 'object' && value !== null;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
+}
+
+function asPoint(value: unknown): GridPoint | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const x = asNumber(value.x);
+  const y = asNumber(value.y);
+  if (x === undefined || y === undefined) {
+    return undefined;
+  }
+  return { x, y };
+}
+
 export type ExternalEventItem = {
   eventId: string;
   kind:
@@ -36,7 +67,7 @@ export type ExternalEventItem = {
     | 'leave_conversation'
     | 'continue_doing'
     | 'do_something';
-  args: Record<string, any>;
+  args: ExternalEventArgs;
   priority: 0 | 1 | 2 | 3;
   enqueueTs: number;
   expiresAt?: number;
@@ -100,6 +131,20 @@ function normalizeExternalQueueState(state: ExternalQueueState | undefined): Ext
   };
 }
 
+function toExternalEventItem(
+  item: Omit<ExternalEventItem, 'args'> & { args: unknown },
+): ExternalEventItem {
+  return {
+    eventId: item.eventId,
+    kind: item.kind,
+    args: isRecord(item.args) ? item.args : {},
+    priority: item.priority,
+    enqueueTs: item.enqueueTs,
+    expiresAt: item.expiresAt,
+    source: item.source,
+  };
+}
+
 export class Agent {
   id: GameId<'agents'>;
   playerId: GameId<'players'>;
@@ -135,8 +180,10 @@ export class Agent {
     this.lastConversation = lastConversation;
     this.lastInviteAttempt = lastInviteAttempt;
     this.inProgressOperation = inProgressOperation;
-    this.externalEventQueue = externalEventQueue ? [...externalEventQueue] : [];
-    this.externalPriorityQueue = externalPriorityQueue ? [...externalPriorityQueue] : [];
+    this.externalEventQueue =
+      externalEventQueue?.map((item) => toExternalEventItem(item)) ?? [];
+    this.externalPriorityQueue =
+      externalPriorityQueue?.map((item) => toExternalEventItem(item)) ?? [];
     this.externalQueueState = normalizeExternalQueueState(externalQueueState);
   }
 
@@ -178,35 +225,42 @@ export class Agent {
     this.externalQueueState.idle.consecutivePrefetchMisses = 0;
   }
 
-  private normalizeActivityFromEvent(now: number, args: Record<string, any>): Activity | undefined {
-    if (
-      args?.activity &&
-      typeof args.activity.description === 'string' &&
-      typeof args.activity.until === 'number'
-    ) {
-      return {
-        description: args.activity.description,
-        emoji: typeof args.activity.emoji === 'string' ? args.activity.emoji : undefined,
-        until: args.activity.until,
-        started: args.activity.started ?? now,
-      };
+  private normalizeActivityFromEvent(now: number, args: ExternalEventArgs): Activity | undefined {
+    const nestedActivity = isRecord(args.activity) ? args.activity : undefined;
+    if (nestedActivity) {
+      const description = asString(nestedActivity.description);
+      const until = asNumber(nestedActivity.until);
+      if (description !== undefined && until !== undefined) {
+        return {
+          description,
+          emoji: asString(nestedActivity.emoji),
+          until,
+          started: asNumber(nestedActivity.started) ?? now,
+        };
+      }
     }
-    if (typeof args?.description === 'string' && typeof args?.until === 'number') {
+
+    const description = asString(args.description);
+    const until = asNumber(args.until);
+    if (description !== undefined && until !== undefined) {
       return {
-        description: args.description,
-        emoji: typeof args.emoji === 'string' ? args.emoji : undefined,
-        until: args.until,
+        description,
+        emoji: asString(args.emoji),
+        until,
         started: now,
       };
     }
-    if (typeof args?.description === 'string' && typeof args?.duration === 'number') {
+
+    const duration = asNumber(args.duration);
+    if (description !== undefined && duration !== undefined) {
       return {
-        description: args.description,
-        emoji: typeof args.emoji === 'string' ? args.emoji : undefined,
-        until: now + args.duration,
+        description,
+        emoji: asString(args.emoji),
+        until: now + duration,
         started: now,
       };
     }
+
     return undefined;
   }
 
@@ -394,9 +448,9 @@ export class Agent {
 
     switch (event.kind) {
       case 'move_to': {
-        let destination = event.args?.destination;
-        const targetPlayerId = event.args?.targetPlayerId;
-        if (!destination && typeof targetPlayerId === 'string') {
+        let destination = asPoint(event.args.destination);
+        const targetPlayerId = asString(event.args.targetPlayerId);
+        if (!destination && targetPlayerId) {
           const parsedTargetPlayerId = parseGameId('players', targetPlayerId);
           const targetPlayer = game.world.players.get(parsedTargetPlayerId);
           if (!targetPlayer) {
@@ -407,7 +461,7 @@ export class Agent {
             y: Math.floor(targetPlayer.position.y),
           };
         }
-        if (!destination || typeof destination.x !== 'number' || typeof destination.y !== 'number') {
+        if (!destination) {
           throw new Error(`Invalid destination for move_to: ${JSON.stringify(event.args)}`);
         }
         movePlayer(game, now, player, {
@@ -417,17 +471,17 @@ export class Agent {
         return;
       }
       case 'say': {
-        const conversationIdRaw = event.args?.conversationId;
-        if (typeof conversationIdRaw !== 'string') {
+        const conversationIdRaw = asString(event.args.conversationId);
+        if (!conversationIdRaw) {
           throw new Error(`Missing conversationId for say: ${JSON.stringify(event.args)}`);
         }
-        game.handleInput(now as any, 'externalBotSendMessage' as any, {
+        game.handleInput(now, 'externalBotSendMessage', {
           agentId: this.id,
           conversationId: conversationIdRaw,
-          text: typeof event.args?.text === 'string' ? event.args.text : undefined,
-          timestamp: typeof event.args?.timestamp === 'number' ? event.args.timestamp : now,
-          leaveConversation: !!(event.args?.leaveAfter || event.args?.leaveConversation),
-        } as any);
+          text: asString(event.args.text),
+          timestamp: asNumber(event.args.timestamp) ?? now,
+          leaveConversation: Boolean(event.args.leaveAfter || event.args.leaveConversation),
+        });
         return;
       }
       case 'emote': {
@@ -439,29 +493,27 @@ export class Agent {
         return;
       }
       case 'start_conversation': {
-        const inviteeRaw = event.args?.invitee ?? event.args?.targetPlayerId;
-        if (typeof inviteeRaw !== 'string') {
+        const inviteeRaw = asString(event.args.invitee) ?? asString(event.args.targetPlayerId);
+        if (!inviteeRaw) {
           throw new Error(`Missing invitee for start_conversation: ${JSON.stringify(event.args)}`);
         }
-        game.handleInput(now as any, 'startConversation' as any, {
+        game.handleInput(now, 'startConversation', {
           playerId: this.playerId,
           invitee: inviteeRaw,
-        } as any);
+        });
         this.lastInviteAttempt = now;
         return;
       }
       case 'accept_invite': {
         const conversationIdRaw =
-          typeof event.args?.conversationId === 'string'
-            ? event.args.conversationId
-            : game.world.playerConversation(player)?.id;
+          asString(event.args.conversationId) ?? game.world.playerConversation(player)?.id;
         if (!conversationIdRaw) {
           throw new Error(`Missing conversationId for accept_invite: ${JSON.stringify(event.args)}`);
         }
-        game.handleInput(now as any, 'acceptInvite' as any, {
+        game.handleInput(now, 'acceptInvite', {
           playerId: this.playerId,
           conversationId: conversationIdRaw,
-        } as any);
+        });
         if (player.pathfinding) {
           delete player.pathfinding;
         }
@@ -476,30 +528,26 @@ export class Agent {
       }
       case 'reject_invite': {
         const conversationIdRaw =
-          typeof event.args?.conversationId === 'string'
-            ? event.args.conversationId
-            : game.world.playerConversation(player)?.id;
+          asString(event.args.conversationId) ?? game.world.playerConversation(player)?.id;
         if (!conversationIdRaw) {
           throw new Error(`Missing conversationId for reject_invite: ${JSON.stringify(event.args)}`);
         }
-        game.handleInput(now as any, 'rejectInvite' as any, {
+        game.handleInput(now, 'rejectInvite', {
           playerId: this.playerId,
           conversationId: conversationIdRaw,
-        } as any);
+        });
         return;
       }
       case 'leave_conversation': {
         const conversationIdRaw =
-          typeof event.args?.conversationId === 'string'
-            ? event.args.conversationId
-            : game.world.playerConversation(player)?.id;
+          asString(event.args.conversationId) ?? game.world.playerConversation(player)?.id;
         if (!conversationIdRaw) {
           throw new Error(`Missing conversationId for leave_conversation: ${JSON.stringify(event.args)}`);
         }
-        game.handleInput(now as any, 'leaveConversation' as any, {
+        game.handleInput(now, 'leaveConversation', {
           playerId: this.playerId,
           conversationId: conversationIdRaw,
-        } as any);
+        });
         return;
       }
       case 'continue_doing': {
@@ -511,7 +559,7 @@ export class Agent {
         return;
       }
       case 'do_something': {
-        const actionType = typeof event.args?.actionType === 'string' ? event.args.actionType : undefined;
+        const actionType = asString(event.args.actionType);
         if (actionType) {
           switch (actionType) {
             case 'move_to': {
@@ -519,7 +567,7 @@ export class Agent {
                 ...event,
                 kind: 'move_to',
                 args: {
-                  destination: event.args?.destination,
+                  destination: event.args.destination,
                 },
               });
               return;
@@ -529,7 +577,7 @@ export class Agent {
                 ...event,
                 kind: 'start_conversation',
                 args: {
-                  invitee: event.args?.invitee ?? event.args?.targetPlayerId,
+                  invitee: asString(event.args.invitee) ?? asString(event.args.targetPlayerId),
                 },
               });
               return;
@@ -540,12 +588,7 @@ export class Agent {
                 kind: 'say',
                 args: {
                   ...event.args,
-                  text:
-                    typeof event.args?.content === 'string'
-                      ? event.args.content
-                      : typeof event.args?.text === 'string'
-                        ? event.args.text
-                        : undefined,
+                  text: asString(event.args.content) ?? asString(event.args.text),
                 },
               });
               return;
@@ -555,7 +598,7 @@ export class Agent {
                 ...event,
                 kind: 'accept_invite',
                 args: {
-                  conversationId: event.args?.conversationId,
+                  conversationId: event.args.conversationId,
                 },
               });
               return;
@@ -565,7 +608,7 @@ export class Agent {
                 ...event,
                 kind: 'leave_conversation',
                 args: {
-                  conversationId: event.args?.conversationId,
+                  conversationId: event.args.conversationId,
                 },
               });
               return;
@@ -587,16 +630,16 @@ export class Agent {
         }
 
         // 兼容旧结构：当 actionType 缺失时，沿用历史字段猜测逻辑。
-        const inviteeRaw = event.args?.invitee;
-        if (typeof inviteeRaw === 'string') {
-          game.handleInput(now as any, 'startConversation' as any, {
+        const inviteeRaw = asString(event.args.invitee);
+        if (inviteeRaw) {
+          game.handleInput(now, 'startConversation', {
             playerId: this.playerId,
             invitee: inviteeRaw,
-          } as any);
+          });
           this.lastInviteAttempt = now;
         }
-        const destination = event.args?.destination;
-        if (destination && typeof destination.x === 'number' && typeof destination.y === 'number') {
+        const destination = asPoint(event.args.destination);
+        if (destination) {
           movePlayer(game, now, player, {
             x: Math.floor(destination.x),
             y: Math.floor(destination.y),
@@ -607,10 +650,6 @@ export class Agent {
           player.activity = activity;
         }
         return;
-      }
-      default: {
-        const unreachable: never = event.kind;
-        throw new Error(`Unknown external event kind: ${unreachable}`);
       }
     }
   }
@@ -866,7 +905,18 @@ export class Agent {
     }
     const operationId = game.allocId('operations');
     console.log(`Agent ${this.id} starting operation ${name} (${operationId})`);
-    game.scheduleOperation(name, { operationId, ...args } as any);
+    if (name === 'agentRememberConversation') {
+      game.scheduleOperation({
+        name,
+        args: {
+          operationId,
+          worldId: args.worldId,
+          playerId: args.playerId,
+          agentId: args.agentId,
+          conversationId: args.conversationId,
+        },
+      });
+    }
     this.inProgressOperation = {
       name,
       operationId,
@@ -954,14 +1004,14 @@ export type SerializedAgent = ObjectType<typeof serializedAgent>;
 
 type AgentOperations = typeof internal.aiTown.agentOperations;
 
-export async function runAgentOperation(ctx: MutationCtx, operation: string, args: any) {
-  let reference;
+export async function runAgentOperation(
+  ctx: MutationCtx,
+  operation: 'agentRememberConversation',
+  args: FunctionArgs<typeof internal.aiTown.agentOperations.agentRememberConversation>,
+) {
   switch (operation) {
     case 'agentRememberConversation':
-      reference = internal.aiTown.agentOperations.agentRememberConversation;
-      break;
-    default:
-      throw new Error(`Unknown operation: ${operation}`);
+      await ctx.scheduler.runAfter(0, internal.aiTown.agentOperations.agentRememberConversation, args);
+      return;
   }
-  await ctx.scheduler.runAfter(0, reference, args);
 }

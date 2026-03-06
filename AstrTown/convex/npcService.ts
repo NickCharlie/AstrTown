@@ -1,6 +1,6 @@
 import { api, internal } from './_generated/api';
 import { Id } from './_generated/dataModel';
-import { action, httpAction, internalMutation, mutation, query } from './_generated/server';
+import { ActionCtx, action, httpAction, internalMutation, mutation, query } from './_generated/server';
 import { extractSessionToken, validateSession } from './auth';
 import { v } from 'convex/values';
 import { Descriptions } from '../data/characters';
@@ -66,7 +66,10 @@ function internalError(code: string, message: string, request?: Request) {
 }
 
 function toErrorMessage(e: unknown, fallback: string): string {
-  return String((e as any)?.message ?? e ?? fallback);
+  if (e instanceof Error) {
+    return e.message;
+  }
+  return String(e ?? fallback);
 }
 
 function generateTokenValue() {
@@ -91,7 +94,7 @@ function resolveDescriptionIndex(character?: string) {
 type InputStatusResult =
   | {
       kind: 'ok';
-      value: any;
+      value: unknown;
     }
   | {
       kind: 'error';
@@ -99,10 +102,108 @@ type InputStatusResult =
     }
   | null;
 
-async function waitForInputStatus(ctx: any, inputId: Id<'inputs'>): Promise<InputStatusResult> {
+type NpcTraceContext = {
+  source?: string;
+  requestPath?: string;
+  requestMethod?: string;
+  userAgent?: string;
+  origin?: string;
+};
+
+type NpcCreateBody = {
+  name: string;
+  character?: string;
+};
+
+type NpcTokenBody = {
+  botTokenId: string;
+};
+
+type NpcCreateArgs = {
+  sessionToken: string;
+  name: string;
+  character?: string;
+  traceContext?: NpcTraceContext;
+};
+
+type NpcWithName = {
+  id: string;
+  playerId: string;
+};
+
+type ConversationParticipant = {
+  playerId?: string;
+  status?: {
+    kind?: string;
+  };
+};
+
+type ConversationSummary = {
+  id?: string;
+  participants?: ConversationParticipant[];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parseNpcCreateBody(body: unknown): NpcCreateBody | null {
+  if (!isRecord(body)) {
+    return null;
+  }
+  const { name, character } = body;
+  if (typeof name !== 'string') {
+    return null;
+  }
+  if (character !== undefined && typeof character !== 'string') {
+    return null;
+  }
+  return {
+    name,
+    character,
+  };
+}
+
+function parseNpcTokenBody(body: unknown): NpcTokenBody | null {
+  if (!isRecord(body)) {
+    return null;
+  }
+  const { botTokenId } = body;
+  if (typeof botTokenId !== 'string') {
+    return null;
+  }
+  return { botTokenId };
+}
+
+function normalizeTraceContext(value: unknown): NpcTraceContext | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return {
+    source: typeof value.source === 'string' ? value.source : undefined,
+    requestPath: typeof value.requestPath === 'string' ? value.requestPath : undefined,
+    requestMethod: typeof value.requestMethod === 'string' ? value.requestMethod : undefined,
+    userAgent: typeof value.userAgent === 'string' ? value.userAgent : undefined,
+    origin: typeof value.origin === 'string' ? value.origin : undefined,
+  };
+}
+
+function isNpcWithName(value: unknown): value is NpcWithName {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.playerId === 'string';
+}
+
+function isConversationSummary(value: unknown): value is ConversationSummary {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const participants = value.participants;
+  return participants === undefined || Array.isArray(participants);
+}
+
+async function waitForInputStatus(ctx: ActionCtx, inputId: Id<'inputs'>): Promise<InputStatusResult> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < CREATE_NPC_TIMEOUT_MS) {
-    const status = (await ctx.runQuery((api as any).aiTown.main.inputStatus, {
+    const status = (await ctx.runQuery(api.aiTown.main.inputStatus, {
       inputId,
     })) as InputStatusResult;
     if (status !== null) {
@@ -119,10 +220,10 @@ export const setNpcNameInternal = internalMutation({
     playerId: v.string(),
     name: v.string(),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const playerDescription = await ctx.db
       .query('playerDescriptions')
-      .withIndex('worldId', (q: any) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
       .unique();
     if (!playerDescription) {
       throw new Error(`playerDescription 不存在: ${args.playerId}`);
@@ -133,7 +234,7 @@ export const setNpcNameInternal = internalMutation({
   },
 });
 
-export const createNpcWithToken: any = action({
+export const createNpcWithToken = action({
   args: {
     sessionToken: v.string(),
     name: v.string(),
@@ -148,7 +249,12 @@ export const createNpcWithToken: any = action({
       }),
     ),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args): Promise<{
+    agentId: string;
+    playerId: string;
+    token: string;
+    name: string;
+  }> => {
     const sessionToken = args.sessionToken.trim();
     if (!sessionToken) {
       throw new Error('sessionToken 不能为空');
@@ -158,31 +264,14 @@ export const createNpcWithToken: any = action({
       throw new Error('NPC 名称不能为空');
     }
 
-    const traceContext =
-      args.traceContext && typeof args.traceContext === 'object'
-        ? {
-            source:
-              typeof args.traceContext.source === 'string' ? args.traceContext.source : undefined,
-            requestPath:
-              typeof args.traceContext.requestPath === 'string'
-                ? args.traceContext.requestPath
-                : undefined,
-            requestMethod:
-              typeof args.traceContext.requestMethod === 'string'
-                ? args.traceContext.requestMethod
-                : undefined,
-            userAgent:
-              typeof args.traceContext.userAgent === 'string' ? args.traceContext.userAgent : undefined,
-            origin: typeof args.traceContext.origin === 'string' ? args.traceContext.origin : undefined,
-          }
-        : undefined;
+    const traceContext = normalizeTraceContext(args.traceContext);
 
     const user = await validateSession(ctx, sessionToken);
     if (!user) {
       throw new Error('会话无效或已过期');
     }
 
-    const worldStatus = await ctx.runQuery((api as any).world.defaultWorldStatus, {});
+    const worldStatus = await ctx.runQuery(api.world.defaultWorldStatus, {});
     if (!worldStatus) {
       throw new Error('当前没有默认世界');
     }
@@ -205,7 +294,7 @@ export const createNpcWithToken: any = action({
       ts: Date.now(),
     });
 
-    const inputId = await ctx.runMutation((api as any).aiTown.main.sendInput, {
+    const inputId = await ctx.runMutation(api.aiTown.main.sendInput, {
       worldId: worldStatus.worldId,
       name: 'createAgent',
       args: {
@@ -236,12 +325,13 @@ export const createNpcWithToken: any = action({
       throw new Error(`创建 NPC 失败: ${status.message}`);
     }
 
-    const agentId = status.value?.agentId;
+    const statusValue = status.value;
+    const agentId = isRecord(statusValue) ? statusValue.agentId : undefined;
     if (!agentId || typeof agentId !== 'string') {
       throw new Error('创建 NPC 失败: 返回值缺少 agentId');
     }
 
-    const worldState = await ctx.runQuery((api as any).world.worldState, {
+    const worldState = await ctx.runQuery(api.world.worldState, {
       worldId: worldStatus.worldId,
     });
     const world = worldState?.world;
@@ -249,7 +339,7 @@ export const createNpcWithToken: any = action({
       throw new Error('创建 NPC 失败: 世界不存在');
     }
 
-    const agent = world.agents.find((item: any) => item.id === agentId);
+    const agent = world.agents.find((item) => isNpcWithName(item) && item.id === agentId);
     if (!agent) {
       throw new Error('创建 NPC 失败: 未找到新建 agent');
     }
@@ -259,13 +349,13 @@ export const createNpcWithToken: any = action({
       throw new Error('创建 NPC 失败: 未找到 playerId');
     }
 
-    await ctx.runMutation((internal as any).npcService.setNpcNameInternal, {
+    await ctx.runMutation(internal.npcService.setNpcNameInternal, {
       worldId: worldStatus.worldId,
       playerId,
       name: npcName,
     });
 
-    const tokenResult = await ctx.runMutation((api as any).botApi.createBotToken, {
+    const tokenResult = await ctx.runMutation(api.botApi.createBotToken, {
       agentId,
       playerId,
       userId: user.userId,
@@ -302,7 +392,7 @@ export const listMyNpcs = query({
   args: {
     sessionToken: v.string(),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const sessionToken = args.sessionToken.trim();
     if (!sessionToken) {
       throw new Error('sessionToken 不能为空');
@@ -316,15 +406,15 @@ export const listMyNpcs = query({
     const now = Date.now();
     const docs = await ctx.db
       .query('botTokens')
-      .withIndex('by_userId', (q: any) => q.eq('userId', user.userId))
+      .withIndex('by_userId', (q) => q.eq('userId', user.userId))
       .order('desc')
       .collect();
 
     const result = await Promise.all(
-      docs.map(async (doc: any) => {
+      docs.map(async (doc) => {
         const playerDescription = await ctx.db
           .query('playerDescriptions')
-          .withIndex('worldId', (q: any) => q.eq('worldId', doc.worldId).eq('playerId', doc.playerId))
+          .withIndex('worldId', (q) => q.eq('worldId', doc.worldId).eq('playerId', doc.playerId))
           .unique();
 
         const isExpired = doc.expiresAt !== 0 && now > doc.expiresAt;
@@ -358,7 +448,7 @@ export const resetNpcToken = mutation({
     sessionToken: v.string(),
     botTokenId: v.id('botTokens'),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const sessionToken = args.sessionToken.trim();
     if (!sessionToken) {
       throw new Error('sessionToken 不能为空');
@@ -395,7 +485,7 @@ export const interruptNpcConversation = mutation({
     sessionToken: v.string(),
     botTokenId: v.id('botTokens'),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const sessionToken = args.sessionToken.trim();
     if (!sessionToken) {
       throw new Error('sessionToken 不能为空');
@@ -419,13 +509,16 @@ export const interruptNpcConversation = mutation({
       throw new Error('世界不存在');
     }
 
-    const activeConversation = world.conversations.find((conversation: any) => {
-      if (!conversation || !Array.isArray(conversation.participants)) {
+    const activeConversation = world.conversations.find((conversation) => {
+      if (!isConversationSummary(conversation) || !Array.isArray(conversation.participants)) {
         return false;
       }
       return conversation.participants.some(
-        (member: any) =>
-          member?.playerId === tokenDoc.playerId && member?.status?.kind === 'participating',
+        (member) =>
+          isRecord(member) &&
+          member.playerId === tokenDoc.playerId &&
+          isRecord(member.status) &&
+          member.status.kind === 'participating',
       );
     });
 
@@ -433,10 +526,10 @@ export const interruptNpcConversation = mutation({
       throw new Error('该 NPC 当前不在进行中的对话中');
     }
 
-    const inputId = await insertInput(ctx, tokenDoc.worldId, 'leaveConversation' as any, {
+    const inputId = await insertInput(ctx, tokenDoc.worldId, 'leaveConversation', {
       playerId: tokenDoc.playerId,
       conversationId: activeConversation.id,
-    } as any);
+    });
 
     return {
       inputId,
@@ -451,7 +544,7 @@ export const getNpcToken = query({
     sessionToken: v.string(),
     botTokenId: v.id('botTokens'),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const sessionToken = args.sessionToken.trim();
     if (!sessionToken) {
       throw new Error('sessionToken 不能为空');
@@ -476,31 +569,26 @@ export const getNpcToken = query({
   },
 });
 
-export const optionsNpc = httpAction(async (_ctx: any, request: Request) => {
+export const optionsNpc = httpAction(async (_ctx, request: Request) => {
   return corsPreflightResponse(request);
 });
 
-export const postNpcCreate = httpAction(async (ctx: any, request: Request) => {
+export const postNpcCreate = httpAction(async (ctx, request: Request) => {
   const sessionToken = extractSessionToken(request);
   if (!sessionToken) {
     return unauthorized('AUTH_FAILED', 'Missing session token', request);
   }
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return badRequest('INVALID_JSON', 'Request body is not valid JSON', request);
   }
 
-  if (!body || typeof body !== 'object') {
+  const parsedBody = parseNpcCreateBody(body);
+  if (!parsedBody) {
     return badRequest('INVALID_ARGS', 'Invalid request body', request);
-  }
-  if (typeof body.name !== 'string') {
-    return badRequest('INVALID_ARGS', 'Missing name', request);
-  }
-  if (body.character !== undefined && typeof body.character !== 'string') {
-    return badRequest('INVALID_ARGS', 'character must be string', request);
   }
 
   const traceContext = {
@@ -516,18 +604,20 @@ export const postNpcCreate = httpAction(async (ctx: any, request: Request) => {
     requestMethod: traceContext.requestMethod,
     userAgent: traceContext.userAgent,
     origin: traceContext.origin,
-    hasCharacter: typeof body.character === 'string' && body.character.trim().length > 0,
-    name: body.name,
+    hasCharacter:
+      typeof parsedBody.character === 'string' && parsedBody.character.trim().length > 0,
+    name: parsedBody.name,
     ts: Date.now(),
   });
 
   try {
-    const result = await ctx.runAction((api as any).npcService.createNpcWithToken, {
+    const actionArgs: NpcCreateArgs = {
       sessionToken,
-      name: body.name,
-      character: body.character,
+      name: parsedBody.name,
+      character: parsedBody.character,
       traceContext,
-    });
+    };
+    const result = await ctx.runAction(api.npcService.createNpcWithToken, actionArgs);
     return jsonResponse({ ok: true, ...result }, undefined, request);
   } catch (e: unknown) {
     const message = toErrorMessage(e, '创建 NPC 失败');
@@ -556,14 +646,14 @@ export const postNpcCreate = httpAction(async (ctx: any, request: Request) => {
   }
 });
 
-export const getNpcList = httpAction(async (ctx: any, request: Request) => {
+export const getNpcList = httpAction(async (ctx, request: Request) => {
   const sessionToken = extractSessionToken(request);
   if (!sessionToken) {
     return unauthorized('AUTH_FAILED', 'Missing session token', request);
   }
 
   try {
-    const items = await ctx.runQuery((api as any).npcService.listMyNpcs, {
+    const items = await ctx.runQuery(api.npcService.listMyNpcs, {
       sessionToken,
     });
     return jsonResponse({ ok: true, items }, undefined, request);
@@ -576,27 +666,28 @@ export const getNpcList = httpAction(async (ctx: any, request: Request) => {
   }
 });
 
-export const postNpcResetToken = httpAction(async (ctx: any, request: Request) => {
+export const postNpcResetToken = httpAction(async (ctx, request: Request) => {
   const sessionToken = extractSessionToken(request);
   if (!sessionToken) {
     return unauthorized('AUTH_FAILED', 'Missing session token', request);
   }
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return badRequest('INVALID_JSON', 'Request body is not valid JSON', request);
   }
 
-  if (!body || typeof body !== 'object' || typeof body.botTokenId !== 'string') {
+  const parsedBody = parseNpcTokenBody(body);
+  if (!parsedBody) {
     return badRequest('INVALID_ARGS', 'Missing botTokenId', request);
   }
 
   try {
-    const result = await ctx.runMutation((api as any).npcService.resetNpcToken, {
+    const result = await ctx.runMutation(api.npcService.resetNpcToken, {
       sessionToken,
-      botTokenId: body.botTokenId,
+      botTokenId: parsedBody.botTokenId as Id<'botTokens'>,
     });
     return jsonResponse({ ok: true, token: result.token }, undefined, request);
   } catch (e: unknown) {
@@ -614,27 +705,28 @@ export const postNpcResetToken = httpAction(async (ctx: any, request: Request) =
   }
 });
 
-export const postNpcInterrupt = httpAction(async (ctx: any, request: Request) => {
+export const postNpcInterrupt = httpAction(async (ctx, request: Request) => {
   const sessionToken = extractSessionToken(request);
   if (!sessionToken) {
     return unauthorized('AUTH_FAILED', 'Missing session token', request);
   }
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return badRequest('INVALID_JSON', 'Request body is not valid JSON', request);
   }
 
-  if (!body || typeof body !== 'object' || typeof body.botTokenId !== 'string') {
+  const parsedBody = parseNpcTokenBody(body);
+  if (!parsedBody) {
     return badRequest('INVALID_ARGS', 'Missing botTokenId', request);
   }
 
   try {
-    const result = await ctx.runMutation((api as any).npcService.interruptNpcConversation, {
+    const result = await ctx.runMutation(api.npcService.interruptNpcConversation, {
       sessionToken,
-      botTokenId: body.botTokenId,
+      botTokenId: parsedBody.botTokenId as Id<'botTokens'>,
     });
     return jsonResponse({ ok: true, ...result }, undefined, request);
   } catch (e: unknown) {
@@ -655,7 +747,7 @@ export const postNpcInterrupt = httpAction(async (ctx: any, request: Request) =>
   }
 });
 
-export const getNpcTokenById = httpAction(async (ctx: any, request: Request) => {
+export const getNpcTokenById = httpAction(async (ctx, request: Request) => {
   const sessionToken = extractSessionToken(request);
   if (!sessionToken) {
     return unauthorized('AUTH_FAILED', 'Missing session token', request);
@@ -678,9 +770,9 @@ export const getNpcTokenById = httpAction(async (ctx: any, request: Request) => 
   }
 
   try {
-    const result = await ctx.runQuery((api as any).npcService.getNpcToken, {
+    const result = await ctx.runQuery(api.npcService.getNpcToken, {
       sessionToken,
-      botTokenId,
+      botTokenId: botTokenId as Id<'botTokens'>,
     });
     return jsonResponse({ ok: true, token: result.token }, undefined, request);
   } catch (e: unknown) {

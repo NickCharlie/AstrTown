@@ -38,6 +38,14 @@ function parseBearerToken(request: Request): string | null {
   return token.trim();
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toRequestBodyObject(value: unknown): Record<string, unknown> {
+  return isObjectRecord(value) ? value : {};
+}
+
 export type VerifiedBotToken = {
   token: string;
   agentId: string;
@@ -49,7 +57,7 @@ export type VerifiedBotToken = {
 
 export const verifyBotTokenQuery = query({
   args: { token: v.string() },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const rec = await ctx.db
       .query('botTokens')
       .withIndex('token', (q: any) => q.eq('token', args.token))
@@ -278,7 +286,7 @@ async function loadWorldAndAgent(
 
 export const tokenDocByToken = query({
   args: { token: v.string() },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const tokenDoc = await ctx.db
       .query('botTokens')
       .withIndex('token', (q: any) => q.eq('token', args.token))
@@ -298,7 +306,7 @@ export const updatePlayerDescription = mutation({
     playerId: v.string(),
     description: v.string(),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const verified = await ctx.runQuery((api as any).botApi.verifyBotTokenQuery as any, { token: args.token });
     if (!verified.valid) {
       throw new Error(verified.message);
@@ -339,7 +347,7 @@ export const patchTokenUsage = mutation({
     lastIdempotencyKey: v.string(),
     lastIdempotencyResult: v.any(),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     await ctx.db.patch(args.tokenDocId, {
       lastUsedAt: args.lastUsedAt,
       lastIdempotencyKey: args.lastIdempotencyKey,
@@ -358,7 +366,7 @@ export const writeExternalBotMessage = mutation({
     messageUuid: v.string(),
     leaveConversation: v.boolean(),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     await ctx.db.insert('messages', {
       conversationId: args.conversationId,
       author: args.playerId,
@@ -378,7 +386,7 @@ export const writeExternalBotMessage = mutation({
 
 export const getWorldById = query({
   args: { worldId: v.id('worlds') },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     return await ctx.db.get(args.worldId);
   },
 });
@@ -388,7 +396,7 @@ export const getExternalQueueStatus = query({
     worldId: v.id('worlds'),
     agentId: v.string(),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const world = await ctx.db.get(args.worldId);
     if (!world) {
       throw new Error('World not found');
@@ -438,7 +446,7 @@ export const getConversationTranscript = query({
     maxMessages: v.optional(v.number()),
     order: v.optional(v.union(v.literal('asc'), v.literal('desc'))),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const maxMessages = args.maxMessages ?? 80;
     if (!Number.isInteger(maxMessages) || maxMessages <= 0 || maxMessages > 300) {
       throw new Error('maxMessages must be an integer between 1 and 300');
@@ -529,7 +537,7 @@ export const postCommandBatch = mutation({
       }),
     ),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const world = await ctx.db.get(args.worldId);
     if (!world) {
       throw new ParameterValidationError('World not found');
@@ -571,17 +579,18 @@ export const postCommandBatchHttp = httpAction(async (ctx: ActionCtx, request: R
   const idemKey = request.headers.get('x-idempotency-key');
   if (!idemKey) return badRequest('INVALID_ARGS', 'Missing X-Idempotency-Key');
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
-  } catch (e: any) {
-    const message = String(e?.message ?? 'Request body is not valid JSON');
+  } catch (e: unknown) {
+    const message = String((e as Error | undefined)?.message ?? 'Request body is not valid JSON');
     return badRequest('INVALID_JSON', message);
   }
 
-  const worldId = body?.worldId;
-  const agentId = body?.agentId;
-  const events = body?.events;
+  const bodyObject = toRequestBodyObject(body);
+  const worldId = bodyObject.worldId;
+  const agentId = bodyObject.agentId;
+  const events = bodyObject.events;
 
   if (agentId !== verified.binding.agentId) {
     return unauthorized('AUTH_FAILED', 'agentId mismatch');
@@ -708,17 +717,18 @@ export const postCommand = httpAction(async (ctx: ActionCtx, request: Request) =
   const idemKey = request.headers.get('x-idempotency-key');
   if (!idemKey) return badRequest('INVALID_ARGS', 'Missing X-Idempotency-Key');
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
-  } catch (e: any) {
-    const message = String(e?.message ?? 'Request body is not valid JSON');
+  } catch (e: unknown) {
+    const message = String((e as Error | undefined)?.message ?? 'Request body is not valid JSON');
     return badRequest('INVALID_JSON', message);
   }
-  const agentId = body?.agentId;
-  const commandType = body?.commandType as CommandType | undefined;
-  const args = body?.args;
-  const enqueueMode = body?.enqueueMode as PostCommandEnqueueMode | undefined;
+  const bodyObject = toRequestBodyObject(body);
+  const agentId = bodyObject.agentId;
+  const commandType = bodyObject.commandType as CommandType | undefined;
+  const args = bodyObject.args;
+  const enqueueMode = bodyObject.enqueueMode as PostCommandEnqueueMode | undefined;
 
   if (agentId !== verified.binding.agentId) {
     return unauthorized('AUTH_FAILED', 'agentId mismatch');
@@ -906,13 +916,14 @@ export const getAgentStatus = httpAction(async (ctx: ActionCtx, request: Request
 
 
 export const postTokenValidate = httpAction(async (ctx: ActionCtx, request: Request) => {
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return badRequest('INVALID_JSON', 'Request body is not valid JSON');
   }
-  const token = body?.token;
+  const bodyObject = toRequestBodyObject(body);
+  const token = bodyObject.token;
   if (!token || typeof token !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing token');
   }
@@ -937,7 +948,7 @@ export const createBotToken = mutation({
     expiresAt: v.number(),
     description: v.optional(v.string()),
   },
-  handler: async (ctx: any, args: any) => {
+  handler: async (ctx, args) => {
     const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
     const now = Date.now();
     await ctx.db.insert('botTokens', {
@@ -962,15 +973,16 @@ export const postDescriptionUpdate = httpAction(async (ctx: ActionCtx, request: 
   const verified = await verifyBotToken(ctx, token);
   if (!verified.valid) return unauthorized(verified.code, verified.message);
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return badRequest('INVALID_JSON', 'Request body is not valid JSON');
   }
 
-  const playerId = body?.playerId;
-  const description = body?.description;
+  const bodyObject = toRequestBodyObject(body);
+  const playerId = bodyObject.playerId;
+  const description = bodyObject.description;
 
   if (!playerId || typeof playerId !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing playerId');
@@ -1000,23 +1012,24 @@ export const postTokenCreate = httpAction(async (ctx: ActionCtx, request: Reques
     return unauthorized('AUTH_FAILED', 'Unauthorized');
   }
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return badRequest('INVALID_JSON', 'Request body is not valid JSON');
   }
-  if (!body?.worldId || !body?.agentId || !body?.playerId) {
+  const bodyObject = toRequestBodyObject(body);
+  if (!bodyObject.worldId || !bodyObject.agentId || !bodyObject.playerId) {
     return badRequest('INVALID_ARGS', 'Missing worldId/agentId/playerId');
   }
   let res: any;
   try {
     res = await ctx.runMutation((api as any).botApi.createBotToken as any, {
-      worldId: body.worldId,
-      agentId: body.agentId,
-      playerId: body.playerId,
-      expiresAt: body.expiresAt ?? 0,
-      description: body.description,
+      worldId: bodyObject.worldId,
+      agentId: bodyObject.agentId,
+      playerId: bodyObject.playerId,
+      expiresAt: bodyObject.expiresAt ?? 0,
+      description: bodyObject.description,
     });
   } catch (e: any) {
     const message = String(e?.message ?? e ?? 'Failed to create bot token');
@@ -1032,19 +1045,24 @@ export const postMemorySearch = httpAction(async (ctx: ActionCtx, request: Reque
   const verified = await verifyBotToken(ctx, token);
   if (!verified.valid) return unauthorized(verified.code, verified.message);
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
-  } catch (e: any) {
-    const message = String(e?.message ?? 'Request body is not valid JSON');
+  } catch (e: unknown) {
+    const message = String((e as Error | undefined)?.message ?? 'Request body is not valid JSON');
     return badRequest('INVALID_JSON', message);
   }
 
-  const queryText = body?.queryText;
-  const limit = body?.limit ?? 3;
+  const bodyObject = toRequestBodyObject(body);
+  const queryText = bodyObject.queryText;
+  const limitRaw = bodyObject.limit;
+  const limit = limitRaw === undefined ? 3 : limitRaw;
 
   if (!queryText || typeof queryText !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing queryText');
+  }
+  if (typeof limit !== 'number') {
+    return badRequest('INVALID_ARGS', 'limit must be an integer between 1 and 50');
   }
   if (!Number.isInteger(limit) || limit <= 0 || limit > 50) {
     return badRequest('INVALID_ARGS', 'limit must be an integer between 1 and 50');
@@ -1125,18 +1143,19 @@ export const handleGetConversationTranscript = httpAction(async (ctx: ActionCtx,
   const verified = await verifyBotToken(ctx, token);
   if (!verified.valid) return unauthorized(verified.code, verified.message);
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
-  } catch (e: any) {
-    const message = String(e?.message ?? 'Request body is not valid JSON');
+  } catch (e: unknown) {
+    const message = String((e as Error | undefined)?.message ?? 'Request body is not valid JSON');
     return badRequest('INVALID_JSON', message);
   }
 
-  const worldId = body?.worldId;
-  const conversationIdRaw = body?.conversationId;
-  const maxMessagesRaw = body?.maxMessages;
-  const orderRaw = body?.order;
+  const bodyObject = toRequestBodyObject(body);
+  const worldId = bodyObject.worldId;
+  const conversationIdRaw = bodyObject.conversationId;
+  const maxMessagesRaw = bodyObject.maxMessages;
+  const orderRaw = bodyObject.order;
 
   if (!worldId || typeof worldId !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing worldId');
@@ -1199,18 +1218,19 @@ export const postSocialAffinity = httpAction(async (ctx: ActionCtx, request: Req
   const verified = await verifyBotToken(ctx, token);
   if (!verified.valid) return unauthorized(verified.code, verified.message);
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
-  } catch (e: any) {
-    const message = String(e?.message ?? 'Request body is not valid JSON');
+  } catch (e: unknown) {
+    const message = String((e as Error | undefined)?.message ?? 'Request body is not valid JSON');
     return badRequest('INVALID_JSON', message);
   }
 
-  const ownerId = body?.ownerId;
-  const targetId = body?.targetId;
-  const scoreDelta = body?.scoreDelta;
-  const label = body?.label;
+  const bodyObject = toRequestBodyObject(body);
+  const ownerId = bodyObject.ownerId;
+  const targetId = bodyObject.targetId;
+  const scoreDelta = bodyObject.scoreDelta;
+  const label = bodyObject.label;
 
   if (!ownerId || typeof ownerId !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing ownerId');
@@ -1248,18 +1268,19 @@ export const postSocialRelationship = httpAction(async (ctx: ActionCtx, request:
   const verified = await verifyBotToken(ctx, token);
   if (!verified.valid) return unauthorized(verified.code, verified.message);
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
-  } catch (e: any) {
-    const message = String(e?.message ?? 'Request body is not valid JSON');
+  } catch (e: unknown) {
+    const message = String((e as Error | undefined)?.message ?? 'Request body is not valid JSON');
     return badRequest('INVALID_JSON', message);
   }
 
-  const playerAId = body?.playerAId;
-  const playerBId = body?.playerBId;
-  const status = body?.status;
-  const establishedAt = body?.establishedAt;
+  const bodyObject = toRequestBodyObject(body);
+  const playerAId = bodyObject.playerAId;
+  const playerBId = bodyObject.playerBId;
+  const status = bodyObject.status;
+  const establishedAt = bodyObject.establishedAt;
 
   if (!playerAId || typeof playerAId !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing playerAId');
@@ -1328,25 +1349,26 @@ export const postMemoryInject = httpAction(async (ctx: ActionCtx, request: Reque
   const verified = await verifyBotToken(ctx, token);
   if (!verified.valid) return unauthorized(verified.code, verified.message);
 
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
-  } catch (e: any) {
-    const message = String(e?.message ?? 'Request body is not valid JSON');
+  } catch (e: unknown) {
+    const message = String((e as Error | undefined)?.message ?? 'Request body is not valid JSON');
     return badRequest('INVALID_JSON', message);
   }
 
-  const agentId = body?.agentId;
-  const playerId = body?.playerId;
-  const summary = body?.summary;
-  const importance = body?.importance;
-  const memoryType = body?.memoryType;
-  const conversationId = body?.conversationId;
-  const counterpartPlayerIds = body?.counterpartPlayerIds;
-  const transcriptDigest = body?.transcriptDigest;
-  const transcriptMessageCount = body?.transcriptMessageCount;
-  const sourceEventId = body?.sourceEventId;
-  const externalKey = body?.externalKey;
+  const bodyObject = toRequestBodyObject(body);
+  const agentId = bodyObject.agentId;
+  const playerId = bodyObject.playerId;
+  const summary = bodyObject.summary;
+  const importance = bodyObject.importance;
+  const memoryType = bodyObject.memoryType;
+  const conversationId = bodyObject.conversationId;
+  const counterpartPlayerIds = bodyObject.counterpartPlayerIds;
+  const transcriptDigest = bodyObject.transcriptDigest;
+  const transcriptMessageCount = bodyObject.transcriptMessageCount;
+  const sourceEventId = bodyObject.sourceEventId;
+  const externalKey = bodyObject.externalKey;
 
   if (!agentId || typeof agentId !== 'string') {
     return badRequest('INVALID_ARGS', 'Missing agentId');
