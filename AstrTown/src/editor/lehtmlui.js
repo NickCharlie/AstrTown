@@ -1,6 +1,7 @@
 import * as PIXI from 'pixi.js'
 import { g_ctx }  from './lecontext.js' // global context
-import * as CONFIG from './leconfig.js' 
+import * as CONFIG from './leconfig.js'
+import { getTilesetBookmarks } from './tileset-meta.js'
 
 // --
 //  Set sizes and limits for HTML in main UI
@@ -19,8 +20,8 @@ export function initMainHTMLWindow() {
 
     const tilesetPane = document.getElementById('tilesetpane');
     if (tilesetPane) {
-        tilesetPane.style.maxWidth = `${CONFIG.htmlTilesetPaneW}px`;
-        tilesetPane.style.maxHeight = `${CONFIG.htmlTilesetPaneH}px`;
+        tilesetPane.style.maxWidth = '100%';
+        tilesetPane.style.maxHeight = '100%';
     }
 
     const compositePane = document.getElementById('compositepane');
@@ -39,9 +40,156 @@ export function initMainHTMLWindow() {
 // Initialize handlers for file loading
 // --
 
+export function bindInspectorResizer() {
+    if (g_ctx._inspectorResizerBound) {
+        return;
+    }
 
+    const resizer = document.getElementById('inspector-resizer');
+    if (!resizer) {
+        return;
+    }
 
+    const minWidth = 280;
+    const maxWidth = 720;
+    let dragging = false;
 
+    const onPointerMove = (event) => {
+        if (!dragging) {
+            return;
+        }
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+        const nextWidth = Math.min(maxWidth, Math.max(minWidth, viewportWidth - event.clientX));
+        document.documentElement.style.setProperty('--inspector-w', `${nextWidth}px`);
+    };
+
+    const stopDragging = () => {
+        dragging = false;
+        resizer.classList.remove('is-dragging');
+        document.body.style.userSelect = '';
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', stopDragging);
+    };
+
+    resizer.addEventListener('pointerdown', (event) => {
+        dragging = true;
+        resizer.classList.add('is-dragging');
+        document.body.style.userSelect = 'none';
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', stopDragging);
+        event.preventDefault();
+    });
+
+    g_ctx._inspectorResizerBound = true;
+}
+
+function groupBookmarksByCategory(bookmarks = []) {
+    const groups = [];
+    const groupMap = new Map();
+
+    for (const bookmark of bookmarks) {
+        const category = bookmark?.category || '未分类';
+        if (!groupMap.has(category)) {
+            const entry = { category, items: [] };
+            groupMap.set(category, entry);
+            groups.push(entry);
+        }
+        groupMap.get(category).items.push(bookmark);
+    }
+
+    return groups;
+}
+
+function getTilesetDisplayName(tilesetPath) {
+    if (typeof tilesetPath !== 'string') {
+        return '';
+    }
+
+    const normalized = tilesetPath.trim();
+    if (!normalized) {
+        return '';
+    }
+
+    const withoutQuery = normalized.split(/[?#]/, 1)[0] || '';
+    const sanitized = withoutQuery.replace(/\\/g, '/');
+    const segments = sanitized.split('/').filter(Boolean);
+    return segments.pop() || '';
+}
+
+export function renderTilesetBookmarks() {
+    const list = document.getElementById('tileset-roi-list');
+    const pane = document.getElementById('tilesetpane');
+    if (!list || !pane) {
+        return;
+    }
+
+    const tilesetZoom = Number.isFinite(g_ctx.tilesetZoom) ? g_ctx.tilesetZoom : 1;
+    const bookmarks = getTilesetBookmarks(g_ctx.tilesetpath);
+    list.innerHTML = '';
+
+    if (!Array.isArray(bookmarks) || bookmarks.length === 0) {
+        const empty = document.createElement('div');
+        empty.id = 'tileset-roi-empty';
+        empty.textContent = '当前 Tileset 暂无快捷定位';
+        list.appendChild(empty);
+        return;
+    }
+
+    const groups = groupBookmarksByCategory(bookmarks);
+    for (const group of groups) {
+        const section = document.createElement('section');
+        section.className = 'tileset-roi-group';
+
+        const title = document.createElement('div');
+        title.className = 'tileset-roi-group-title';
+        title.textContent = group.category;
+        section.appendChild(title);
+
+        const buttonList = document.createElement('div');
+        buttonList.className = 'tileset-roi-group-list';
+
+        for (const item of group.items) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'tileset-roi-btn';
+            button.textContent = item.label;
+            button.addEventListener('click', () => {
+                pane.scrollTo({
+                    top: Math.max(0, Math.round((Number(item.y) || 0) * tilesetZoom)),
+                    behavior: 'smooth',
+                });
+            });
+            buttonList.appendChild(button);
+        }
+
+        section.appendChild(buttonList);
+        list.appendChild(section);
+    }
+}
+
+export function bindTilesetPrimaryActions() {
+    if (g_ctx._tilesetPrimaryActionsBound) {
+        return;
+    }
+
+    const changeBtn = document.getElementById('btn-change-tileset');
+    const fileInput = document.getElementById('tilesetfile');
+    if (changeBtn && fileInput) {
+        changeBtn.addEventListener('click', () => fileInput.click());
+    }
+
+    g_ctx._tilesetPrimaryActionsBound = true;
+}
+
+export function updateTilesetMetaLabel() {
+    const label = document.getElementById('tileset-current-label');
+    if (!label) {
+        return;
+    }
+
+    const source = getTilesetDisplayName(g_ctx.tilesetpath);
+    label.textContent = source ? `当前资源：${source}` : '当前资源：-';
+}
 
 // --
 // Initialize handlers loading a PNG file into the composite window 
@@ -287,6 +435,7 @@ export function initTilesetLoader(callme, onTilesetChanged = null) {
             console.log("tilesetfile ", fileInput.files[0].name);
         }
         g_ctx.tilesetpath =  "./tilesets/"+fileInput.files[0].name;
+        updateTilesetMetaLabel();
         if (typeof onTilesetChanged === 'function') {
             onTilesetChanged(g_ctx.tilesetpath);
         }

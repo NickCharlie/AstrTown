@@ -78,6 +78,8 @@
       </div>
     </div>
 
+    <div id="inspector-resizer" role="separator" aria-orientation="vertical" aria-label="调整右侧面板宽度"></div>
+
     <!-- 右侧属性区 -->
     <aside id="app-inspector">
       <!-- 地形面板 -->
@@ -95,16 +97,26 @@
         <div class="panel-section">
           <h3 class="panel-title">瓦片选择</h3>
           <div id="tileset-container">
-            <div id="tileset-toolbar" role="group" aria-label="瓦片缩放">
-              <button class="tileset-zoom-btn" type="button" data-zoom="0.5">50%</button>
-              <button class="tileset-zoom-btn" type="button" data-zoom="0.75">75%</button>
-              <button class="tileset-zoom-btn is-active" type="button" data-zoom="1">100%</button>
-              <button class="tileset-zoom-btn" type="button" data-zoom="1.25">125%</button>
-              <button class="tileset-zoom-btn" type="button" data-zoom="1.5">150%</button>
-              <button id="tileset-zoom-reset" class="tileset-zoom-btn" type="button" data-zoom="reset">重置</button>
+            <div id="tileset-main-actions">
+              <button id="btn-change-tileset" class="tileset-action-btn" type="button">更换 Tileset</button>
+              <span id="tileset-current-label" class="tileset-current-label">当前资源：-</span>
+            </div>
+            <div id="tileset-toolbar" role="group" aria-label="瓦片工具栏">
+              <div id="tileset-zoom-group" class="tileset-toolbar-group" aria-label="瓦片缩放">
+                <button class="tileset-zoom-btn" type="button" data-zoom="0.5">50%</button>
+                <button class="tileset-zoom-btn" type="button" data-zoom="0.75">75%</button>
+                <button class="tileset-zoom-btn is-active" type="button" data-zoom="1">100%</button>
+                <button class="tileset-zoom-btn" type="button" data-zoom="1.25">125%</button>
+                <button class="tileset-zoom-btn" type="button" data-zoom="1.5">150%</button>
+                <button id="tileset-zoom-reset" class="tileset-zoom-btn" type="button" data-zoom="reset">重置</button>
+              </div>
+              <div id="tileset-toolbar-hint">Ctrl + 滚轮缩放</div>
+            </div>
+            <div id="tileset-roi-panel" aria-label="瓦片区域快速定位">
+              <div id="tileset-roi-list"></div>
             </div>
             <div id="tilesetpane">
-              <canvas id="tileset" width="5632" height="8672"></canvas>
+              <canvas id="tileset"></canvas>
             </div>
           </div>
         </div>
@@ -308,7 +320,7 @@
 
         <div class="panel-section">
           <h3 class="panel-title">Tileset</h3>
-          <button type="button" onclick="document.getElementById('tilesetfile').click()">更换 Tileset</button>
+          <button type="button" class="tileset-secondary-action" onclick="document.getElementById('tilesetfile').click()">从资源面板更换 Tileset</button>
           <input id="tilesetfile" type="file" multiple hidden accept=".png,.jpg" />
         </div>
 

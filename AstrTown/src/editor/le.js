@@ -487,6 +487,68 @@ function setTilesetZoom(level, options = {}) {
     }
 
     syncTilesetZoomButtonState(safeLevel);
+    updateTilesetROIButtons();
+}
+
+function updateTilesetROIButtons() {
+    UI.renderTilesetBookmarks();
+}
+
+function updateTilesetSelectionHighlight() {
+    if (!g_ctx.tileset || typeof g_ctx.tileset.drawActiveSelection !== 'function') {
+        return;
+    }
+    g_ctx.tileset.drawActiveSelection();
+}
+
+function getNextTilesetZoomLevel(direction) {
+    const currentLevel = Number.isFinite(g_ctx.tilesetZoom) ? g_ctx.tilesetZoom : (Number(CONFIG.tilesetZoom) || 1);
+    const currentIndex = TILESET_ZOOM_LEVELS.indexOf(currentLevel);
+    const safeIndex = currentIndex >= 0 ? currentIndex : TILESET_ZOOM_LEVELS.indexOf(1);
+    const nextIndex = Math.min(
+        TILESET_ZOOM_LEVELS.length - 1,
+        Math.max(0, safeIndex + direction),
+    );
+    return TILESET_ZOOM_LEVELS[nextIndex];
+}
+
+function bindTilesetWheelZoom() {
+    if (g_ctx._tilesetWheelZoomBound) {
+        return;
+    }
+
+    const tilesetPane = document.getElementById('tilesetpane');
+    if (!tilesetPane) {
+        return;
+    }
+
+    let wheelDeltaAccumulator = 0;
+    const wheelThreshold = 80;
+
+    tilesetPane.addEventListener('wheel', (event) => {
+        if (!event.ctrlKey) {
+            wheelDeltaAccumulator = 0;
+            return;
+        }
+
+        event.preventDefault();
+        wheelDeltaAccumulator += Number(event.deltaY) || 0;
+
+        if (Math.abs(wheelDeltaAccumulator) < wheelThreshold) {
+            return;
+        }
+
+        const direction = wheelDeltaAccumulator > 0 ? 1 : -1;
+        wheelDeltaAccumulator = 0;
+
+        const nextLevel = getNextTilesetZoomLevel(direction);
+        if (nextLevel === g_ctx.tilesetZoom) {
+            return;
+        }
+        setTilesetZoom(nextLevel);
+    }, { passive: false });
+
+    g_ctx._tilesetWheelZoomBound = true;
 }
 
 function bindTilesetToolbar() {
@@ -528,6 +590,7 @@ function refreshTilesetCanvasMetrics() {
         ? g_ctx.tilesetZoom
         : (Number(CONFIG.tilesetZoom) || 1);
     setTilesetZoom(preferredZoom, { persistConfig: false });
+    updateTilesetSelectionHighlight();
 }
 
 function tileset_index_from_coords(x, y) {
@@ -541,11 +604,18 @@ function level_index_from_coords(x, y) {
     let retme = x + (y*CONFIG.leveltilewidth) + offset; 
     return retme;
 }
-function tileset_index_from_px(x, y) {
-    let coord_x = Math.floor(x / (g_ctx.tiledimx + CONFIG.tilesetpadding));
-    let coord_y = Math.floor(y / (g_ctx.tiledimx+ CONFIG.tilesetpadding));
+function toTilesetCanvasCoord(value) {
+    const zoom = Number.isFinite(g_ctx.tilesetZoom) ? g_ctx.tilesetZoom : 1;
+    return value / zoom;
+}
 
-    console.log("tileset_index_from_px ",x, y);
+function tileset_index_from_px(x, y) {
+    const canvasX = toTilesetCanvasCoord(x);
+    const canvasY = toTilesetCanvasCoord(y);
+    let coord_x = Math.floor(canvasX / (g_ctx.tiledimx + CONFIG.tilesetpadding));
+    let coord_y = Math.floor(canvasY / (g_ctx.tiledimx + CONFIG.tilesetpadding));
+
+    console.log("tileset_index_from_px ", x, y, canvasX, canvasY);
 
     return tileset_index_from_coords(coord_x, coord_y); 
 }
@@ -842,6 +912,8 @@ class TilesetContext {
         const texture = PIXI.Texture.from(mod.tilesetpath);
         const bg    = new PIXI.Sprite(texture);
 
+        this.selectionBox = new PIXI.Graphics();
+
         this.square = new PIXI.Graphics();
         this.square.beginFill(0x2980b9);
         this.square.drawRect(0, 0, mod.tilesetpxw, mod.tilesetpxh);
@@ -849,6 +921,7 @@ class TilesetContext {
         this.square.eventMode = 'static';
         this.container.addChild(this.square);
         this.container.addChild(bg);
+        this.container.addChild(this.selectionBox);
         
         this.app.stage.addChild(this.container);
 
@@ -874,13 +947,55 @@ class TilesetContext {
             if(g_ctx.debug_flag) {
                 console.log("g_ctx.tileset mouse down. index "+g_ctx.tile_index);
             }
+            updateTilesetSelectionHighlight();
         });
 
         this.square.on('pointerdown', onTilesetDragStart)
                 .on('pointerup', onTilesetDragEnd)
                 .on('pointerupoutside', onTilesetDragEnd);
+
+        this.drawActiveSelection();
     }
 
+    drawActiveSelection() {
+        if (!this.selectionBox) {
+            return;
+        }
+
+        this.selectionBox.clear();
+        this.selectionBox.zIndex = CONFIG.zIndexGrid + 5;
+
+        const selectedTiles = Array.isArray(g_ctx.selected_tiles) ? g_ctx.selected_tiles : [];
+        const tilesToHighlight = selectedTiles.length > 0
+            ? selectedTiles.map((tile) => ({
+                dx: Number(tile[0]) || 0,
+                dy: Number(tile[1]) || 0,
+                index: Number(tile[2]),
+            }))
+            : (Number.isFinite(g_ctx.tile_index)
+                ? [{ dx: 0, dy: 0, index: Number(g_ctx.tile_index) }]
+                : []);
+
+        if (tilesToHighlight.length === 0) {
+            return;
+        }
+
+        const tileSize = g_ctx.tiledimx;
+        this.selectionBox.lineStyle(2, 0x7dff85, 1);
+
+        for (const tile of tilesToHighlight) {
+            if (!Number.isFinite(tile.index) || tile.index < 0) {
+                continue;
+            }
+            const [px, py] = tileset_px_from_index(tile.index);
+            const drawX = px + this.fudgex;
+            const drawY = py + this.fudgey;
+            this.selectionBox.beginFill(tile.dx === 0 && tile.dy === 0 ? 0x22c55e : 0x38bdf8, 0.18);
+            this.selectionBox.drawRect(drawX, drawY, tileSize, tileSize);
+            this.selectionBox.endFill();
+        }
+    }
+ 
     addTileSheet(name, sheet){
         console.log(" tileset.addTileSheet ", sheet);
 
@@ -1269,6 +1384,7 @@ window.addEventListener(
             g_ctx.selected_tiles = [];
             g_ctx.g_layers.map((l) => l.mouseshadow.removeChildren());
             g_ctx.composite.mouseshadow.removeChildren();
+            updateTilesetSelectionHighlight();
         }
         else if (event.code == 'KeyM'){
             g_ctx.g_layers.map((l) => l.drawFilter () );
@@ -1347,6 +1463,7 @@ function onTilesetDragStart(e)
     // g_ctx.tileset.app.stage.addChild(g_ctx.tileset.dragctx.tooltip);
 
     g_ctx.selected_tiles = [];
+    updateTilesetSelectionHighlight();
 }
 
 // Stop dragging feedback once the handle is released.
@@ -1373,10 +1490,10 @@ function onTilesetDragEnd(e)
         g_ctx.tileset.dragctx.starty = tmp;
     }
 
-    let starttilex = Math.floor(g_ctx.tileset.dragctx.startx / g_ctx.tiledimx);
-    let starttiley = Math.floor(g_ctx.tileset.dragctx.starty / g_ctx.tiledimx);
-    let endtilex = Math.floor(g_ctx.tileset.dragctx.endx / g_ctx.tiledimx);
-    let endtiley = Math.floor(g_ctx.tileset.dragctx.endy / g_ctx.tiledimx);
+    let starttilex = Math.floor(toTilesetCanvasCoord(g_ctx.tileset.dragctx.startx) / g_ctx.tiledimx);
+    let starttiley = Math.floor(toTilesetCanvasCoord(g_ctx.tileset.dragctx.starty) / g_ctx.tiledimx);
+    let endtilex = Math.floor(toTilesetCanvasCoord(g_ctx.tileset.dragctx.endx) / g_ctx.tiledimx);
+    let endtiley = Math.floor(toTilesetCanvasCoord(g_ctx.tileset.dragctx.endy) / g_ctx.tiledimx);
 
     if (g_ctx.debug_flag) {
         console.log("sx sy ex ey ", starttilex, ",", starttiley, ",", endtilex, ",", endtiley);
@@ -1399,6 +1516,7 @@ function onTilesetDragEnd(e)
         }
     }
     g_ctx.tileset.dragctx.square.clear();
+    updateTilesetSelectionHighlight();
     // g_ctx.tileset.dragctx.tooltip.clear();
 }
 
@@ -2086,7 +2204,7 @@ function initPixiApps() {
     g_ctx.map_app = new PIXI.Application({ backgroundColor: 0x2980b9, width: CONFIG.levelwidth, height: CONFIG.levelheight, view: document.getElementById('mapcanvas') });
 
     // g_ctx.tileset
-    g_ctx.tileset_app = new PIXI.Application({ width: 5632 , height: 8672, view: document.getElementById('tileset') });
+    g_ctx.tileset_app = new PIXI.Application({ width: g_ctx.tilesetpxw, height: g_ctx.tilesetpxh, view: document.getElementById('tileset') });
     //g_ctx.tileset_app = new PIXI.Application({ width: g_ctx.tilesetpxw, height: g_ctx.tilesetpxh, view: document.getElementById('tileset') });
     // const { renderer } = g_ctx.tileset_app;
     // // Install the EventSystem
@@ -2247,6 +2365,9 @@ async function init() {
     attachResourceRegistryAPI();
 
     bindTilesetToolbar();
+    bindTilesetWheelZoom();
+    UI.bindInspectorResizer();
+    UI.bindTilesetPrimaryActions();
 
     // We need to load the Tileset to know how to size things. So we block until done.
     await initTilesConfig();
@@ -2288,9 +2409,12 @@ async function init() {
         applySelection: applySceneAnimSelectionToInstance,
     });
     UI.initTilesetLoader(loadMapFromModule.bind(null, g_ctx), registerTilesetResource);
-
+ 
     bindWorkspaceUI();
+    UI.updateTilesetMetaLabel();
+    updateTilesetROIButtons();
     setSceneAnimBrush({});
+    updateTilesetSelectionHighlight();
 }
 
 init();
