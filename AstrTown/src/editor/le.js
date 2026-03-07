@@ -76,6 +76,28 @@ const TILESET_ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5];
 const SCENE_ANIM_DEFAULT_SPEED = 0.1;
 const SCENE_ANIM_DEFAULT_LOOP = true;
 const SCENE_ANIM_SELECTION_TINT = 0x7dff85;
+const BUILTIN_SPRITESHEET_MANIFEST = [
+    {
+        name: 'campfire.json',
+        path: './campfire.json',
+    },
+    {
+        name: 'gentlewaterfall.json',
+        path: './gentlewaterfall.json',
+    },
+    {
+        name: 'gentlesplash.json',
+        path: './gentlesplash.json',
+    },
+    {
+        name: 'gentlesparkle.json',
+        path: './gentlesparkle.json',
+    },
+    {
+        name: 'windmill.json',
+        path: './windmill.json',
+    },
+];
 
 g_ctx.sceneAnimBrush = {
     sheet: '',
@@ -260,6 +282,28 @@ function refreshResourceToolbar() {
     if (typeof g_ctx.refreshResourceToolbar === 'function') {
         g_ctx.refreshResourceToolbar();
     }
+}
+
+async function preloadBuiltInSpritesheets() {
+    const loadTasks = BUILTIN_SPRITESHEET_MANIFEST.map(async (entry) => {
+        try {
+            const sheet = await PIXI.Assets.load(entry.path);
+            registerSpritesheetResource(entry.name, sheet, {
+                type: 'spritesheet',
+                sourceKind: 'builtin',
+                fileName: getFileNameFromPath(entry.name),
+                path: entry.path,
+                isActive: false,
+            });
+            return true;
+        } catch (error) {
+            console.warn('preloadBuiltInSpritesheets: 内置动画资源加载失败', entry.name, error);
+            return false;
+        }
+    });
+
+    await Promise.all(loadTasks);
+    refreshResourceToolbar();
 }
 
 function applyTilesetResource(resourceName) {
@@ -2533,6 +2577,7 @@ async function init() {
     UI.bindInspectorResizer();
     UI.bindResourcePanelResizer();
     UI.bindTilesetPrimaryActions();
+    await preloadBuiltInSpritesheets();
     UI.initResourceToolbar({
         getResourceRegistry: g_ctx.getResourceRegistry,
         getActiveTilesetResource: () => getActiveTilesetRegistryEntry(),

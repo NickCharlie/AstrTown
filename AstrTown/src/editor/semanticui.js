@@ -723,11 +723,14 @@ export async function initSemanticUI(g_ctx, options = {}) {
 
     const spriteOptions = (registry.spritesheets || [])
       .filter((item) => item && item.name)
-      .map((item) => ({ value: item.name, label: item.name }));
+      .map((item) => ({ value: item.name, label: item.label || item.name }));
 
     const currentSheet = fields.appearanceSheet?.value || '';
     if (sourceType === 'spritesheet') {
       populateSelect(fields.appearanceSheet, spriteOptions, currentSheet);
+      if (spriteOptions.length === 0 && fields.appearanceSheet) {
+        fields.appearanceSheet.options[0].textContent = '当前未预加载动画资源，请稍候或导入 spritesheet';
+      }
     } else {
       populateSelect(fields.appearanceSheet, tileOptions, currentSheet);
     }
@@ -736,6 +739,9 @@ export async function initSemanticUI(g_ctx, options = {}) {
     const selectedSheet = (registry.spritesheets || []).find((item) => item.name === selectedSheetName);
     const animationOptions = (selectedSheet?.animations || []).map((name) => ({ value: name, label: name }));
     populateSelect(fields.appearanceAnimationName, animationOptions, fields.appearanceAnimationName?.value || '');
+    if (sourceType === 'spritesheet' && spriteOptions.length === 0 && fields.appearanceAnimationName) {
+      fields.appearanceAnimationName.options[0].textContent = '请先加载 spritesheet 后选择动画';
+    }
 
     renderResourceStatus();
   }
@@ -1197,7 +1203,7 @@ export async function initSemanticUI(g_ctx, options = {}) {
       const title = document.createElement('strong');
       title.textContent = '暂无物体';
       const hint = document.createElement('span');
-      hint.textContent = '点击“新建物体”创建后，可切换到“物体放置”模式进行摆放。';
+      hint.textContent = '请先点击“新建物体”配置外观并保存，再切换到“物体放置模式”后在地图上点击放置。';
 
       li.appendChild(title);
       li.appendChild(hint);

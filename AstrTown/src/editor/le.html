@@ -316,14 +316,12 @@
         </div>
 
         <div class="panel-section">
-          <h3 class="panel-title">Tileset</h3>
-          <button type="button" class="tileset-secondary-action" onclick="document.getElementById('tilesetfile').click()">从资源面板更换 Tileset</button>
+          <h3 class="panel-title">资源导入</h3>
+          <div class="btn-row">
+            <button type="button" class="tileset-secondary-action" onclick="document.getElementById('tilesetfile').click()">导入 Tileset</button>
+            <button type="button" onclick="document.getElementById('spritesheet').click()">导入 Spritesheet</button>
+          </div>
           <input id="tilesetfile" type="file" multiple hidden accept=".png,.jpg" />
-        </div>
-
-        <div class="panel-section">
-          <h3 class="panel-title">精灵动画</h3>
-          <button type="button" onclick="document.getElementById('spritesheet').click()">加载 Spritesheet</button>
           <input id="spritesheet" type="file" multiple hidden accept=".json" />
         </div>
 
@@ -401,51 +399,67 @@
     <div id="vertical-resizer" role="separator" aria-orientation="horizontal" aria-label="调整底部资源区高度"></div>
 
     <section id="bottom-resource-panel" aria-label="底部瓦片资源区">
-      <div id="bottom-resource-header">
-        <h3 class="panel-title">瓦片资源区</h3>
-        <div id="tileset-toolbar-hint">Ctrl + 滚轮缩放</div>
-      </div>
       <div id="bottom-resource-body">
-        <div id="resource-toolbar">
-          <div class="resource-type-tabs">
-            <button id="tab-tileset" class="active" type="button">瓦片集</button>
-            <button id="tab-spritesheet" type="button">动画资源</button>
+        <aside id="resource-sidebar" aria-label="资源控制栏">
+          <div class="resource-sidebar-header">
+            <h3 class="panel-title">资源工作台</h3>
+            <div id="tileset-toolbar-hint">Ctrl + 滚轮缩放</div>
           </div>
-          <div class="resource-selector">
-            <select id="resource-select">
-              <option value="">选择资源...</option>
-            </select>
-          </div>
-          <div class="resource-actions">
-            <button id="btn-import-tileset" type="button" title="导入本地瓦片集">导入瓦片集</button>
-            <button id="btn-import-spritesheet" type="button" title="导入本地动画资源">导入动画</button>
-            <button id="btn-use-default" type="button" title="使用地图默认瓦片集">默认瓦片</button>
-          </div>
-          <div class="resource-info">
-            <span id="current-resource-name">当前：gentle.png</span>
-            <span id="current-resource-source">来源：地图默认</span>
-          </div>
-        </div>
-        <div id="tileset-container">
-          <div id="tileset-main-actions">
-            <button id="btn-change-tileset" class="tileset-action-btn" type="button">更换 Tileset</button>
-            <span id="tileset-current-label" class="tileset-current-label">当前资源：-</span>
-          </div>
-          <div id="tileset-toolbar" role="group" aria-label="瓦片工具栏">
-            <div id="tileset-zoom-group" class="tileset-toolbar-group" aria-label="瓦片缩放">
-              <button class="tileset-zoom-btn" type="button" data-zoom="0.5">50%</button>
-              <button class="tileset-zoom-btn" type="button" data-zoom="0.75">75%</button>
-              <button class="tileset-zoom-btn is-active" type="button" data-zoom="1">100%</button>
-              <button class="tileset-zoom-btn" type="button" data-zoom="1.25">125%</button>
-              <button class="tileset-zoom-btn" type="button" data-zoom="1.5">150%</button>
-              <button id="tileset-zoom-reset" class="tileset-zoom-btn" type="button" data-zoom="reset">重置</button>
+
+          <div class="resource-sidebar-section">
+            <div class="resource-type-tabs">
+              <button id="tab-tileset" class="active" type="button">瓦片集</button>
+              <button id="tab-spritesheet" type="button">动画资源</button>
             </div>
           </div>
-          <div id="tileset-roi-panel" aria-label="瓦片区域快速定位">
-            <div id="tileset-roi-list"></div>
+
+          <div class="resource-sidebar-section">
+            <label class="resource-sidebar-label" for="resource-select">当前资源</label>
+            <div class="resource-selector">
+              <select id="resource-select">
+                <option value="">选择资源...</option>
+              </select>
+            </div>
           </div>
-          <div id="tilesetpane">
-            <canvas id="tileset"></canvas>
+
+          <div class="resource-sidebar-section resource-actions resource-actions--stacked">
+            <button id="btn-import-tileset" type="button" title="导入本地瓦片集">导入瓦片集</button>
+            <button id="btn-import-spritesheet" type="button" title="导入本地动画资源">导入动画</button>
+            <button id="btn-use-default" type="button" title="使用地图默认瓦片集">恢复默认瓦片</button>
+            <button id="btn-change-tileset" class="tileset-action-btn" type="button">快速更换 Tileset</button>
+          </div>
+
+          <div class="resource-sidebar-section resource-info-card">
+            <div class="resource-info resource-info--stacked">
+              <span id="current-resource-name">当前：gentle.png</span>
+              <span id="current-resource-source">来源：地图默认</span>
+              <span id="tileset-current-label" class="tileset-current-label">当前资源：-</span>
+            </div>
+          </div>
+        </aside>
+
+        <div id="resource-stage">
+          <div id="tileset-container">
+            <div id="tileset-toolbar" role="group" aria-label="瓦片工具栏">
+              <div class="tileset-toolbar-meta">
+                <span class="tileset-toolbar-title">瓦片浏览区</span>
+                <span class="tileset-toolbar-subtitle">优先纵向滚动浏览，减少横向视线切换</span>
+              </div>
+              <div id="tileset-zoom-group" class="tileset-toolbar-group" aria-label="瓦片缩放">
+                <button class="tileset-zoom-btn" type="button" data-zoom="0.5">50%</button>
+                <button class="tileset-zoom-btn" type="button" data-zoom="0.75">75%</button>
+                <button class="tileset-zoom-btn is-active" type="button" data-zoom="1">100%</button>
+                <button class="tileset-zoom-btn" type="button" data-zoom="1.25">125%</button>
+                <button class="tileset-zoom-btn" type="button" data-zoom="1.5">150%</button>
+                <button id="tileset-zoom-reset" class="tileset-zoom-btn" type="button" data-zoom="reset">重置</button>
+              </div>
+            </div>
+            <div id="tileset-roi-panel" aria-label="瓦片区域快速定位">
+              <div id="tileset-roi-list"></div>
+            </div>
+            <div id="tilesetpane">
+              <canvas id="tileset"></canvas>
+            </div>
           </div>
         </div>
       </div>

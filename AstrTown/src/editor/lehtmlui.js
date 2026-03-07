@@ -50,8 +50,8 @@ export function bindInspectorResizer() {
         return;
     }
 
-    const minWidth = 280;
-    const maxWidth = 720;
+    const minWidth = 240;
+    const maxWidth = 420;
     let dragging = false;
 
     const onPointerMove = (event) => {
@@ -100,7 +100,7 @@ export function bindResourcePanelResizer() {
         return;
     }
 
-    const minHeight = 220;
+    const minHeight = 240;
     let dragging = false;
 
     const onPointerMove = (event) => {
@@ -110,7 +110,7 @@ export function bindResourcePanelResizer() {
 
         const workspaceRect = workspace.getBoundingClientRect();
         const nextHeight = workspaceRect.bottom - event.clientY;
-        const maxHeight = Math.max(minHeight, Math.floor(workspaceRect.height * 0.5));
+        const maxHeight = Math.max(minHeight, Math.floor(workspaceRect.height * 0.6));
         const clampedHeight = Math.min(maxHeight, Math.max(minHeight, nextHeight));
 
         workspace.style.setProperty('--resource-panel-h', `${clampedHeight}px`);
@@ -296,6 +296,7 @@ export function updateResourceInfo() {
     }
     if (label) {
         label.textContent = summary;
+        label.title = activeResource?.path || summary;
     }
 }
 
@@ -571,11 +572,16 @@ export function updateResourceSelector() {
     if (!Array.isArray(resourceList) || resourceList.length === 0) {
         const option = document.createElement('option');
         option.value = '';
-        option.textContent = type === 'spritesheet' ? '暂无动画资源' : '暂无瓦片资源';
+        option.textContent = type === 'spritesheet'
+            ? '暂无动画资源，请稍候等待预加载完成或点击“导入动画”'
+            : '暂无瓦片资源，请点击“导入 Tileset”或恢复默认资源';
         select.appendChild(option);
+        select.title = option.textContent;
         select.value = '';
         return;
     }
+
+    select.title = '';
 
     for (const item of resourceList) {
         const option = document.createElement('option');
