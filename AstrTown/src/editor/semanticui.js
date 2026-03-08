@@ -362,6 +362,58 @@ export async function initSemanticUI(g_ctx, options = {}) {
 
   const resourceStatusEl = document.getElementById('semantic-resource-status');
   const resourceListEl = document.getElementById('semantic-resource-list');
+  let missingAppearanceFieldsLogged = false;
+
+  function logMissingAppearanceFields(context) {
+    if (missingAppearanceFieldsLogged) {
+      return;
+    }
+
+    const requiredAppearanceFields = {
+      appearanceRenderType: fields.appearanceRenderType,
+      appearanceSourceType: fields.appearanceSourceType,
+      appearanceSheet: fields.appearanceSheet,
+      appearanceAnimationName: fields.appearanceAnimationName,
+      appearanceFrameX: fields.appearanceFrameX,
+      appearanceFrameY: fields.appearanceFrameY,
+      appearanceFrameWidth: fields.appearanceFrameWidth,
+      appearanceFrameHeight: fields.appearanceFrameHeight,
+      appearanceAnchorX: fields.appearanceAnchorX,
+      appearanceAnchorY: fields.appearanceAnchorY,
+      appearancePreviewScale: fields.appearancePreviewScale,
+    };
+
+    const missingFieldNames = Object.entries(requiredAppearanceFields)
+      .filter(([, element]) => !element)
+      .map(([name]) => name);
+
+    if (missingFieldNames.length === 0) {
+      return;
+    }
+
+    missingAppearanceFieldsLogged = true;
+    console.warn('[semanticui] 外观表单字段缺失，已启用兼容模式', {
+      context,
+      missingFieldNames,
+    });
+  }
+
+  function getAppearanceFormValues() {
+    logMissingAppearanceFields('readForm');
+    return {
+      appearanceRenderType: fields.appearanceRenderType?.value || DEFAULT_FORM.appearanceRenderType,
+      appearanceSourceType: fields.appearanceSourceType?.value || DEFAULT_FORM.appearanceSourceType,
+      appearanceSheet: fields.appearanceSheet?.value || DEFAULT_FORM.appearanceSheet,
+      appearanceAnimationName: fields.appearanceAnimationName?.value || DEFAULT_FORM.appearanceAnimationName,
+      appearanceFrameX: fields.appearanceFrameX?.value || DEFAULT_FORM.appearanceFrameX,
+      appearanceFrameY: fields.appearanceFrameY?.value || DEFAULT_FORM.appearanceFrameY,
+      appearanceFrameWidth: fields.appearanceFrameWidth?.value || DEFAULT_FORM.appearanceFrameWidth,
+      appearanceFrameHeight: fields.appearanceFrameHeight?.value || DEFAULT_FORM.appearanceFrameHeight,
+      appearanceAnchorX: fields.appearanceAnchorX?.value || DEFAULT_FORM.appearanceAnchorX,
+      appearanceAnchorY: fields.appearanceAnchorY?.value || DEFAULT_FORM.appearanceAnchorY,
+      appearancePreviewScale: fields.appearancePreviewScale?.value || DEFAULT_FORM.appearancePreviewScale,
+    };
+  }
 
   function getResourceRegistrySnapshot() {
     if (typeof g_ctx.getResourceRegistry === 'function') {
@@ -1282,6 +1334,26 @@ export async function initSemanticUI(g_ctx, options = {}) {
     fields.occupiedTiles.value = formData.occupiedTiles || '0,0';
     fields.blocksMovement.checked = !!formData.blocksMovement;
 
+    const hasAppearanceFields = !!(
+      fields.appearanceRenderType
+      && fields.appearanceSourceType
+      && fields.appearanceSheet
+      && fields.appearanceAnimationName
+      && fields.appearanceFrameX
+      && fields.appearanceFrameY
+      && fields.appearanceFrameWidth
+      && fields.appearanceFrameHeight
+      && fields.appearanceAnchorX
+      && fields.appearanceAnchorY
+      && fields.appearancePreviewScale
+    );
+
+    if (!hasAppearanceFields) {
+      // 兼容新版布局暂未挂载旧外观表单字段，避免初始化时直接崩溃。
+      logMissingAppearanceFields('fillForm');
+      return;
+    }
+
     fields.appearanceRenderType.value = formData.appearanceRenderType || DEFAULT_FORM.appearanceRenderType;
     fields.appearanceSourceType.value = formData.appearanceSourceType || DEFAULT_FORM.appearanceSourceType;
 
@@ -1339,17 +1411,7 @@ export async function initSemanticUI(g_ctx, options = {}) {
       interactionHint: fields.interactionHint.value,
       occupiedTiles: fields.occupiedTiles.value,
       blocksMovement: fields.blocksMovement.checked,
-      appearanceRenderType: fields.appearanceRenderType.value,
-      appearanceSourceType: fields.appearanceSourceType.value,
-      appearanceSheet: fields.appearanceSheet.value,
-      appearanceAnimationName: fields.appearanceAnimationName.value,
-      appearanceFrameX: fields.appearanceFrameX.value,
-      appearanceFrameY: fields.appearanceFrameY.value,
-      appearanceFrameWidth: fields.appearanceFrameWidth.value,
-      appearanceFrameHeight: fields.appearanceFrameHeight.value,
-      appearanceAnchorX: fields.appearanceAnchorX.value,
-      appearanceAnchorY: fields.appearanceAnchorY.value,
-      appearancePreviewScale: fields.appearancePreviewScale.value,
+      ...getAppearanceFormValues(),
     };
   }
 
