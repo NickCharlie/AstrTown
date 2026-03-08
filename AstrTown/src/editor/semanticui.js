@@ -465,6 +465,36 @@ export async function initSemanticUI(g_ctx, options = {}) {
     statusModeEl.textContent = `模式：${labels[editorMode] || editorMode}`;
   }
 
+  function getModeStatusText(mode) {
+    if (mode === 'object') {
+      const selectedItem = state.selectedCatalogKey
+        ? findByKey(state.catalog, state.selectedCatalogKey)
+        : null;
+      if (selectedItem) {
+        return `当前：物体放置模式（已选模板：${selectedItem.name}）`;
+      }
+      if (state.catalog.length > 0) {
+        return '当前：物体放置模式（请先在列表中选择一个模板后点击地图放置）';
+      }
+      return '当前：物体放置模式（暂无模板，请先在物体绘制模式保存模板）';
+    }
+    if (mode === 'zone') {
+      const selectedZone = zoner.getSelectedZone();
+      if (selectedZone) {
+        return `当前：区域绘制模式（已选区域：${selectedZone.name}）`;
+      }
+      return '当前：区域绘制模式（在地图上拖拽创建或点击列表编辑区域）';
+    }
+    return '当前：普通绘制模式';
+  }
+
+  function syncPlacementStatus() {
+    if (!placementStatus) {
+      return;
+    }
+    placementStatus.textContent = getModeStatusText(state.mode);
+  }
+
   function setMode(mode) {
     state.mode = mode;
     const terrainMode = mode === 'terrain';
@@ -492,15 +522,8 @@ export async function initSemanticUI(g_ctx, options = {}) {
       options.onSwitchSidebarTab(nextSidebarPanel);
     }
 
-    if (placementStatus) {
-      if (objectMode) {
-        placementStatus.textContent = '当前：物体放置模式';
-      } else if (zoneMode) {
-        placementStatus.textContent = '当前：区域绘制模式';
-      } else {
-        placementStatus.textContent = '当前：普通绘制模式';
-      }
-    }
+    syncPlacementStatus();
+    renderResourceStatus();
   }
 
   function setEditorMode(mode) {
@@ -586,6 +609,7 @@ export async function initSemanticUI(g_ctx, options = {}) {
       li.appendChild(title);
       li.appendChild(hint);
       zoneListEl.appendChild(li);
+      syncPlacementStatus();
       return;
     }
 
@@ -603,9 +627,12 @@ export async function initSemanticUI(g_ctx, options = {}) {
         setMode('zone');
         zoner.selectZone(zone.zoneId);
         fillZoneFormFromZone(zone);
+        syncPlacementStatus();
       });
       zoneListEl.appendChild(li);
     }
+
+    syncPlacementStatus();
   }
 
   function refreshPrimaryZoneText() {
@@ -691,22 +718,37 @@ export async function initSemanticUI(g_ctx, options = {}) {
 
     const spriteCount = Array.isArray(registry.spritesheets) ? registry.spritesheets.length : 0;
     const tileCount = Array.isArray(registry.tilesets) ? registry.tilesets.length : 0;
-    resourceStatusEl.textContent = `已加载 tileset ${tileCount} 个，spritesheet ${spriteCount} 个`;
+    const objectCount = Array.isArray(state.catalog) ? state.catalog.length : 0;
+    resourceStatusEl.textContent = `已加载 tileset ${tileCount} 个，spritesheet ${spriteCount} 个，物体模板 ${objectCount} 个`;
 
     resourceListEl.innerHTML = '';
-    if (spriteCount === 0) {
+
+    if (tileCount === 0 && spriteCount === 0) {
       const li = document.createElement('li');
       li.className = 'semantic-empty-card';
-      li.textContent = '暂无已加载 Spritesheet';
+      li.textContent = '暂无已加载资源';
       resourceListEl.appendChild(li);
       return;
     }
 
-    registry.spritesheets.forEach((sheet) => {
+    (registry.tilesets || []).forEach((tileset) => {
       const li = document.createElement('li');
       li.className = 'semantic-list-item';
+      if (registry.activeTileset && registry.activeTileset === tileset.key) {
+        li.classList.add('is-selected');
+      }
+      li.textContent = `Tileset｜${tileset.label || tileset.fileName || tileset.key}`;
+      resourceListEl.appendChild(li);
+    });
+
+    (registry.spritesheets || []).forEach((sheet) => {
+      const li = document.createElement('li');
+      li.className = 'semantic-list-item';
+      if (registry.activeSpritesheet && registry.activeSpritesheet === sheet.key) {
+        li.classList.add('is-selected');
+      }
       const animations = Array.isArray(sheet.animations) ? sheet.animations.join(', ') : '';
-      li.textContent = `${sheet.name} (${animations || '无动画'})`;
+      li.textContent = `Spritesheet｜${sheet.name} (${animations || '无动画'})`;
       resourceListEl.appendChild(li);
     });
   }
@@ -1370,6 +1412,7 @@ export async function initSemanticUI(g_ctx, options = {}) {
     const selectedIndex = state.selectedCatalogKey
       ? state.catalog.findIndex((item) => item.key === state.selectedCatalogKey)
       : -1;
+    let normalized = null;
 
     if (selectedIndex >= 0) {
       const oldKey = state.catalog[selectedIndex].key;
@@ -1378,10 +1421,10 @@ export async function initSemanticUI(g_ctx, options = {}) {
       );
       if (conflict) {
         alert('key 已存在，请修改 key');
-        return;
+        return null;
       }
 
-      const normalized = normalizeCatalogPayload(raw, state.catalog[selectedIndex]);
+      normalized = normalizeCatalogPayload(raw, state.catalog[selectedIndex]);
       state.catalog[selectedIndex] = normalized;
       state.selectedCatalogKey = normalized.key;
 
@@ -1401,10 +1444,10 @@ export async function initSemanticUI(g_ctx, options = {}) {
       const existing = findByKey(state.catalog, nextKey);
       if (existing) {
         alert('key 已存在，请修改 key');
-        return;
+        return null;
       }
 
-      const normalized = normalizeCatalogPayload(raw, null);
+      normalized = normalizeCatalogPayload(raw, null);
       state.catalog.push(normalized);
       state.selectedCatalogKey = normalized.key;
     }
@@ -1415,6 +1458,9 @@ export async function initSemanticUI(g_ctx, options = {}) {
     updateAppearanceOptions();
     syncAppearanceFieldVisibility();
     renderList();
+    syncPlacementStatus();
+    renderResourceStatus();
+    return normalized;
   }
 
   function deleteSelectedCatalog() {
@@ -1667,6 +1713,22 @@ export async function initSemanticUI(g_ctx, options = {}) {
     setEditorMode,
     loadFromMapModule,
     getSemanticSnapshot,
+    upsertCatalogItem,
+    getCatalogItems() {
+      return state.catalog.map((item) => cloneCatalogItem(item));
+    },
+    selectCatalogItem(key) {
+      const target = findByKey(state.catalog, key);
+      if (!target) {
+        return null;
+      }
+      state.selectedCatalogKey = target.key;
+      setMode('object');
+      placer.setSelectedCatalogKey(target.key);
+      fillFormFromCatalog(target);
+      renderList();
+      return cloneCatalogItem(target);
+    },
     refreshCatalog() {
       placer.refreshCatalog(state.catalog);
       updateAppearanceOptions();

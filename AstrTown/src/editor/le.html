@@ -23,9 +23,11 @@
     <div class="toolbar-sep"></div>
 
     <div class="toolbar-group toolbar-mode">
-      <button class="mode-btn active" id="mode-terrain" data-mode="terrain" type="button" title="地形绘制">地形</button>
-      <button class="mode-btn" id="mode-object" data-mode="object" type="button" title="放置对象">物体</button>
-      <button class="mode-btn" id="mode-zone" data-mode="zone" type="button" title="绘制区域">区域</button>
+      <button class="mode-btn active" id="mode-terrain" data-mode="terrain" data-workspace-mode="terrain" type="button" title="地形绘制">地形</button>
+      <button class="mode-btn" id="mode-object-paint" data-mode="object" data-workspace-mode="object-paint" type="button" title="物体绘制">✏️ 绘制物体</button>
+      <button class="mode-btn" id="mode-object-place" data-mode="object" data-workspace-mode="object-place" type="button" title="物体放置">📌 放置物体</button>
+      <button class="mode-btn" id="mode-animation" data-mode="animation" data-workspace-mode="animation" type="button" title="动画制作">🎬 动画</button>
+      <button class="mode-btn" id="mode-zone" data-mode="zone" data-workspace-mode="zone" type="button" title="绘制区域">区域</button>
     </div>
 
     <div class="toolbar-sep"></div>
@@ -143,7 +145,7 @@
 
           <div class="panel-section">
             <h3 class="panel-title">物体创建 / 编辑</h3>
-            <form id="semantic-object-form" class="semantic-form-grid" autocomplete="off">
+            <form id="semantic-object-form" class="semantic-form-grid semantic-form-grid--hidden" autocomplete="off">
               <div class="semantic-field">
                 <label for="semantic-key">Key</label>
                 <input id="semantic-key" name="key" type="text" required />
@@ -174,96 +176,95 @@
                   阻挡移动
                 </label>
               </div>
-
-              <div class="semantic-field semantic-field--full">
-                <div id="appearance-card" class="config-card">
-                  <div class="card-header">
-                    <h4 class="panel-title">外观配置</h4>
-                    <button id="btn-collapse-appearance" class="collapse-btn" type="button" aria-expanded="true" aria-controls="appearance-card-body">收起</button>
-                  </div>
-
-                  <div id="appearance-card-body" class="card-body">
-                    <div class="quick-actions">
-                      <button id="btn-apply-current-tile" class="semantic-btn" type="button" title="将当前选中的瓦片应用为外观">从当前瓦片创建外观</button>
-                      <button id="btn-apply-current-animation" class="semantic-btn" type="button" title="将当前选中的动画应用为外观">从当前动画创建外观</button>
-                    </div>
-
-                    <div class="appearance-grid">
-                      <div class="semantic-field">
-                        <label for="semantic-appearance-render-type">外观类型</label>
-                        <select id="semantic-appearance-render-type" name="appearanceRenderType">
-                          <option value="none">无外观</option>
-                          <option value="static">静态贴图</option>
-                          <option value="animated">动画</option>
-                        </select>
-                      </div>
-
-                      <div class="semantic-field" id="semantic-appearance-source-wrap">
-                        <label for="semantic-appearance-source-type">资源来源</label>
-                        <select id="semantic-appearance-source-type" name="appearanceSourceType">
-                          <option value="tileset">瓦片集</option>
-                          <option value="spritesheet">动画资源</option>
-                        </select>
-                      </div>
-
-                      <div class="semantic-field semantic-field--full" id="semantic-appearance-sheet-wrap">
-                        <label for="semantic-appearance-sheet">选择资源</label>
-                        <select id="semantic-appearance-sheet" name="appearanceSheet"></select>
-                      </div>
-
-                      <div class="semantic-field semantic-field--full" id="semantic-appearance-animation-wrap">
-                        <label for="semantic-appearance-animation">选择动画</label>
-                        <select id="semantic-appearance-animation" name="appearanceAnimationName"></select>
-                      </div>
-                    </div>
-
-                    <div class="semantic-field semantic-field--full" id="semantic-appearance-preview-wrap">
-                      <label for="semantic-appearance-canvas">外观预览</label>
-                      <div class="appearance-preview">
-                        <canvas id="semantic-appearance-canvas" width="128" height="128"></canvas>
-                      </div>
-                    </div>
-
-                    <details class="advanced-params" id="semantic-appearance-advanced">
-                      <summary>高级参数</summary>
-                      <div class="advanced-params-body">
-                        <div class="semantic-field semantic-field--full" id="semantic-appearance-frame-wrap">
-                          <label>静态帧（x,y,width,height）</label>
-                          <div class="semantic-frame-grid">
-                            <input id="semantic-appearance-frame-x" name="appearanceFrameX" type="number" step="1" value="0" />
-                            <input id="semantic-appearance-frame-y" name="appearanceFrameY" type="number" step="1" value="0" />
-                            <input id="semantic-appearance-frame-width" name="appearanceFrameWidth" type="number" step="1" value="32" />
-                            <input id="semantic-appearance-frame-height" name="appearanceFrameHeight" type="number" step="1" value="32" />
-                          </div>
-                        </div>
-
-                        <div class="appearance-advanced-grid">
-                          <div class="semantic-field" id="semantic-appearance-anchor-x-wrap">
-                            <label for="semantic-appearance-anchor-x">锚点 X</label>
-                            <input id="semantic-appearance-anchor-x" name="appearanceAnchorX" type="number" step="0.01" value="0" />
-                          </div>
-
-                          <div class="semantic-field" id="semantic-appearance-anchor-y-wrap">
-                            <label for="semantic-appearance-anchor-y">锚点 Y</label>
-                            <input id="semantic-appearance-anchor-y" name="appearanceAnchorY" type="number" step="0.01" value="0" />
-                          </div>
-
-                          <div class="semantic-field" id="semantic-appearance-preview-scale-wrap">
-                            <label for="semantic-appearance-preview-scale">预览缩放</label>
-                            <input id="semantic-appearance-preview-scale" name="appearancePreviewScale" type="number" step="0.1" min="0.1" value="1" />
-                          </div>
-                        </div>
-                      </div>
-                    </details>
-                  </div>
-                </div>
-              </div>
-
               <div class="btn-row">
                 <button id="semantic-save-object" class="semantic-btn" type="submit">保存物体</button>
                 <button id="semantic-reset-form" class="semantic-btn" type="button">重置表单</button>
               </div>
             </form>
+          </div>
+
+          <div class="panel-section" id="object-paint-editor-panel">
+            <h3 class="panel-title">物体绘制参数</h3>
+            <div class="object-paint-summary-grid">
+              <div class="semantic-field semantic-field--full">
+                <label for="object-paint-catalog-key">模板 Key（自动生成）</label>
+                <input id="object-paint-catalog-key" type="text" readonly />
+              </div>
+              <div class="semantic-field">
+                <label for="object-paint-name">物体名称</label>
+                <input id="object-paint-name" type="text" placeholder="例如：木桶" />
+              </div>
+              <div class="semantic-field">
+                <label for="object-paint-category">分类</label>
+                <input id="object-paint-category" type="text" placeholder="例如：furniture" />
+              </div>
+              <div class="semantic-field semantic-field--full">
+                <label for="object-paint-description">描述</label>
+                <textarea id="object-paint-description" rows="3" placeholder="填写物体用途与说明"></textarea>
+              </div>
+            </div>
+
+            <div class="object-paint-meta-card">
+              <div class="object-paint-meta-row">
+                <span class="object-paint-meta-label">外观类型</span>
+                <strong id="object-paint-render-type">静态贴图</strong>
+              </div>
+              <div class="object-paint-meta-row">
+                <span class="object-paint-meta-label">资源</span>
+                <strong id="object-paint-source">未选择资源</strong>
+              </div>
+              <div class="object-paint-meta-row">
+                <span class="object-paint-meta-label">动画</span>
+                <strong id="object-paint-animation">无</strong>
+              </div>
+              <div class="object-paint-meta-row">
+                <span class="object-paint-meta-label">占地尺寸</span>
+                <strong id="object-paint-occupied-size-label">1 × 1</strong>
+              </div>
+            </div>
+
+            <div class="object-paint-grid-params">
+              <div class="semantic-field">
+                <label for="object-paint-occupied-width">占地宽（格）</label>
+                <input id="object-paint-occupied-width" type="number" min="1" step="1" value="1" />
+              </div>
+              <div class="semantic-field">
+                <label for="object-paint-occupied-height">占地高（格）</label>
+                <input id="object-paint-occupied-height" type="number" min="1" step="1" value="1" />
+              </div>
+              <div class="semantic-field semantic-field-checkbox">
+                <label for="object-paint-blocks-movement">
+                  <input id="object-paint-blocks-movement" type="checkbox" checked />
+                  阻挡移动
+                </label>
+              </div>
+            </div>
+
+            <div class="object-paint-slider-grid">
+              <div class="semantic-field semantic-field--full">
+                <label for="object-paint-anchor-x">锚点 X</label>
+                <input id="object-paint-anchor-x" type="range" min="0" max="1" step="0.01" value="0.5" />
+              </div>
+              <div class="semantic-field semantic-field--full">
+                <label for="object-paint-anchor-y">锚点 Y</label>
+                <input id="object-paint-anchor-y" type="range" min="0" max="1" step="0.01" value="0.5" />
+              </div>
+              <div class="semantic-field semantic-field--full">
+                <label for="object-paint-preview-scale">预览缩放</label>
+                <input id="object-paint-preview-scale" type="range" min="0.5" max="4" step="0.1" value="1" />
+              </div>
+            </div>
+
+            <div class="object-paint-hint-card">
+              <strong>主画布说明</strong>
+              <span>蓝色虚线框表示占地参考；红色十字表示锚点。底部资源区切换瓦片或动画后，会自动应用到当前物体外观。</span>
+            </div>
+
+            <div class="btn-row">
+              <button id="object-paint-new-draft" class="semantic-btn" type="button">新建草稿</button>
+              <button id="object-paint-save-template" class="semantic-btn" type="button">保存物体模板</button>
+              <button id="object-paint-switch-placement" class="semantic-btn" type="button">放置到地图</button>
+            </div>
           </div>
         </div>
 
@@ -373,6 +374,54 @@
               </div>
             </div>
             <button id="scene-anim-apply-instance" type="button">应用到实例</button>
+          </div>
+        </div>
+
+        <div class="panel-section" id="animation-editor-panel">
+          <h3 class="panel-title">动画制作器</h3>
+          <div id="animation-source-hint" class="animation-source-hint">请先在底部资源区选择 tileset 或 spritesheet 作为帧源</div>
+
+          <div class="animation-form-grid">
+            <div class="semantic-field semantic-field--full">
+              <label for="animation-resource-name">资源名</label>
+              <input id="animation-resource-name" type="text" placeholder="例如：campfire-custom" />
+            </div>
+            <div class="semantic-field semantic-field--full">
+              <label for="animation-name">动画名称</label>
+              <input id="animation-name" type="text" placeholder="例如：campfireLoop" />
+            </div>
+            <div class="semantic-field">
+              <label for="animation-fps">FPS</label>
+              <input id="animation-fps" type="number" min="1" step="1" value="10" />
+            </div>
+            <div class="semantic-field semantic-field-checkbox">
+              <label for="animation-loop">
+                <input id="animation-loop" type="checkbox" checked />
+                循环播放
+              </label>
+            </div>
+            <div class="semantic-field">
+              <label for="animation-frame-width">帧宽</label>
+              <input id="animation-frame-width" type="number" min="1" step="1" value="32" />
+            </div>
+            <div class="semantic-field">
+              <label for="animation-frame-height">帧高</label>
+              <input id="animation-frame-height" type="number" min="1" step="1" value="32" />
+            </div>
+          </div>
+
+          <div class="animation-timeline-wrap">
+            <div class="animation-timeline-header">
+              <span>时间轴帧序列</span>
+              <span class="animation-timeline-tip">支持拖拽排序 / 删除</span>
+            </div>
+            <ul id="animation-timeline-list" class="animation-timeline-list"></ul>
+          </div>
+
+          <div class="btn-row">
+            <button id="animation-apply-resource" type="button">应用到资源表</button>
+            <button id="animation-export-json" type="button">导出 JSON</button>
+            <button id="animation-reset-draft" type="button">新建草稿</button>
           </div>
         </div>
 

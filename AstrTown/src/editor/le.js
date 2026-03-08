@@ -44,6 +44,17 @@ import * as UNDO from './undo.js'
 import * as MAPFILE from './mapfile.js'
 import * as UI from './lehtmlui.js'
 import { initSemanticUI } from './semanticui.js';
+import {
+    initAnimationEditor,
+    playAnimationPreview,
+    stopAnimationPreview,
+} from './animation-editor.js';
+import {
+    initObjectPaintEditor,
+    applyTileAsAppearance,
+    applyAnimationAsAppearance,
+    renderObjectPaintPreview,
+} from './object-paint-editor.js';
 import '../../data/mapObjectCatalog.js';
 import { EventSystem } from '@pixi/events';
 
@@ -53,6 +64,14 @@ g_ctx.debug_flag2 = false; // really verbose output
 g_ctx.activeLayer = 0;
 g_ctx.activeSidebarPanel = 'terrain';
 g_ctx.editorMode = 'terrain';
+g_ctx.workspaceModeState = {
+    primaryMode: 'terrain',
+    subMode: null,
+    activeLayer: 0,
+    selection: null,
+    overlayVisible: false,
+    draft: null,
+};
 g_ctx._workspaceUIBound = false;
 g_ctx.compositeDragLayer = null;
 g_ctx.compositeDragging = false;
@@ -67,8 +86,33 @@ const SIDEBAR_PANEL_TO_INSPECTOR = {
 
 const EDITOR_MODE_LABEL = {
     terrain: '地形绘制',
-    object: '语义物体',
+    object: '物体放置',
+    animation: '动画制作',
     zone: '语义区域',
+};
+
+const WORKSPACE_MODE_LABEL = {
+    terrain: '地形',
+    'object-paint': '物体绘制',
+    'object-place': '物体放置',
+    animation: '动画制作',
+    zone: '区域',
+};
+
+const WORKSPACE_MODE_CONFIG = {
+    terrain: { primaryMode: 'terrain', subMode: null, sidebarPanel: 'terrain', editorMode: 'terrain' },
+    'object-paint': { primaryMode: 'object', subMode: 'paint', sidebarPanel: 'sem-objects', editorMode: 'object' },
+    'object-place': { primaryMode: 'object', subMode: 'place', sidebarPanel: 'sem-objects', editorMode: 'object' },
+    animation: { primaryMode: 'animation', subMode: null, sidebarPanel: 'files', editorMode: 'animation' },
+    zone: { primaryMode: 'zone', subMode: null, sidebarPanel: 'sem-zones', editorMode: 'zone' },
+};
+
+const SIDEBAR_PANEL_TO_WORKSPACE_MODE = {
+    terrain: 'terrain',
+    layers: 'terrain',
+    files: 'terrain',
+    'sem-objects': 'object-place',
+    'sem-zones': 'zone',
 };
 
 const LAYER_LABEL = ['背景层0', '背景层1', '物件层0', '物件层1'];
@@ -281,6 +325,12 @@ function getActiveSpritesheetRegistryEntry() {
 function refreshResourceToolbar() {
     if (typeof g_ctx.refreshResourceToolbar === 'function') {
         g_ctx.refreshResourceToolbar();
+    }
+    if (typeof g_ctx.syncAnimationEditorSource === 'function') {
+        g_ctx.syncAnimationEditorSource();
+    }
+    if (g_ctx.semantic && typeof g_ctx.semantic.refreshCatalog === 'function') {
+        g_ctx.semantic.refreshCatalog();
     }
 }
 
@@ -1055,7 +1105,8 @@ class LayerContext {
 
         if (!g_ctx.dkey) {
             this.container.addChild(ctile);
-            g_ctx.composite.container.addChild(ctile2);
+            const mapStage = g_ctx.composite?.workspaceStages?.mapStage || g_ctx.composite.container;
+            mapStage.addChild(ctile2);
         }
 
 
@@ -1069,7 +1120,8 @@ class LayerContext {
             }
             this.container.removeChild(this.sprites[new_index]);
             delete this.sprites[new_index];
-            g_ctx.composite.container.removeChild(this.composite_sprites[new_index]);
+            const mapStage = g_ctx.composite?.workspaceStages?.mapStage || g_ctx.composite.container;
+            mapStage.removeChild(this.composite_sprites[new_index]);
             delete this.composite_sprites[new_index];
         }
 
@@ -1129,12 +1181,13 @@ class TilesetContext {
                 g_ctx.spritesheet = null;
             }
 
-            g_ctx.tile_index = tileset_index_from_px(e.global.x, e.global.y); 
+            g_ctx.tile_index = tileset_index_from_px(e.global.x, e.global.y);
 
             if(g_ctx.debug_flag) {
                 console.log("g_ctx.tileset mouse down. index "+g_ctx.tile_index);
             }
             updateTilesetSelectionHighlight();
+            forwardSelectedTileToObjectPaint();
         });
 
         this.square.on('pointerdown', onTilesetDragStart)
@@ -1227,6 +1280,33 @@ class CompositeContext {
         this.square.eventMode = 'static';
         this.container.addChild(this.square);
 
+        this.workspaceRoot = new PIXI.Container();
+        this.workspaceRoot.sortableChildren = true;
+        this.container.addChild(this.workspaceRoot);
+
+        this.workspaceStages = {
+            mapStage: new PIXI.Container(),
+            objectPaintStage: new PIXI.Container(),
+            animationStage: new PIXI.Container(),
+            overlayStage: new PIXI.Container(),
+        };
+
+        this.workspaceStages.mapStage.label = 'mapStage';
+        this.workspaceStages.objectPaintStage.label = 'objectPaintStage';
+        this.workspaceStages.animationStage.label = 'animationStage';
+        this.workspaceStages.overlayStage.label = 'overlayStage';
+
+        Object.values(this.workspaceStages).forEach((stage) => {
+            stage.visible = false;
+            this.workspaceRoot.addChild(stage);
+        });
+
+        this.workspaceStages.overlayStage.zIndex = CONFIG.zIndexCompositePointer + 10;
+        this.workspaceStages.overlayStage.addChild(this.circle);
+        this.workspaceStages.overlayStage.addChild(this.mouseshadow);
+
+        switchWorkspaceStage(g_ctx.workspaceModeState?.primaryMode || 'terrain', g_ctx.workspaceModeState?.subMode || null);
+
         this.square.on('mousedown', onCompositeMousedown.bind(null, this));
         this.square.on('pointerdown', onCompositePointerDown.bind(null, this));
         this.square.on('pointermove', onCompositePointerMove.bind(null, this));
@@ -1303,6 +1383,10 @@ function loadMapFromModuleFinish(mod) {
     g_ctx.composite.container.removeChildren();
     if (compositeSquare) {
         g_ctx.composite.container.addChildAt(compositeSquare, 0);
+    }
+    if (g_ctx.composite.workspaceRoot) {
+        g_ctx.composite.container.addChild(g_ctx.composite.workspaceRoot);
+        switchWorkspaceStage(g_ctx.workspaceModeState?.primaryMode || 'terrain', g_ctx.workspaceModeState?.subMode || null);
     }
 
     g_ctx.tileset_app.stage.removeChildren()
@@ -1382,8 +1466,145 @@ function updateStatusMode() {
     if (!el) {
         return;
     }
-    const label = EDITOR_MODE_LABEL[g_ctx.editorMode] || g_ctx.editorMode;
+    const state = g_ctx.workspaceModeState || {};
+    const workspaceKey = state.primaryMode === 'object'
+        ? (state.subMode === 'paint' ? 'object-paint' : 'object-place')
+        : state.primaryMode;
+    const label = WORKSPACE_MODE_LABEL[workspaceKey]
+        || EDITOR_MODE_LABEL[g_ctx.editorMode]
+        || g_ctx.editorMode;
     el.textContent = '模式：' + label;
+}
+
+function updateWorkspaceModeUI() {
+    const state = g_ctx.workspaceModeState || {};
+    const workspaceKey = state.primaryMode === 'object'
+        ? (state.subMode === 'paint' ? 'object-paint' : 'object-place')
+        : state.primaryMode;
+    const modeButtons = document.querySelectorAll('.mode-btn');
+    modeButtons.forEach((button) => {
+        const active = button.dataset.workspaceMode === workspaceKey;
+        button.classList.toggle('active', active);
+        button.classList.toggle('is-active', active);
+    });
+    updateStatusMode();
+}
+
+function setWorkspaceOverlayVisible(visible) {
+    const state = g_ctx.workspaceModeState;
+    state.overlayVisible = !!visible;
+    const overlayStage = g_ctx.composite?.workspaceStages?.overlayStage || null;
+    if (overlayStage) {
+        overlayStage.visible = state.overlayVisible;
+    }
+}
+
+function hideAllWorkspaceStages() {
+    const workspaceStages = g_ctx.composite?.workspaceStages;
+    if (!workspaceStages) {
+        return;
+    }
+    Object.values(workspaceStages).forEach((stage) => {
+        if (stage) {
+            stage.visible = false;
+        }
+    });
+}
+
+function showWorkspaceStage(stageName) {
+    const stage = g_ctx.composite?.workspaceStages?.[stageName] || null;
+    if (stage) {
+        stage.visible = true;
+    }
+}
+
+function switchWorkspaceStage(primaryMode, subMode = null) {
+    hideAllWorkspaceStages();
+
+    switch (primaryMode) {
+        case 'terrain':
+            stopAnimationPreview();
+            showWorkspaceStage('mapStage');
+            break;
+        case 'object':
+            stopAnimationPreview();
+            if (subMode === 'paint') {
+                showWorkspaceStage('objectPaintStage');
+                renderObjectPaintPreview();
+            } else {
+                showWorkspaceStage('mapStage');
+            }
+            break;
+        case 'animation':
+            showWorkspaceStage('animationStage');
+            playAnimationPreview();
+            break;
+        case 'zone':
+            stopAnimationPreview();
+            showWorkspaceStage('mapStage');
+            break;
+        default:
+            stopAnimationPreview();
+            showWorkspaceStage('mapStage');
+            break;
+    }
+
+    setWorkspaceOverlayVisible(g_ctx.workspaceModeState?.overlayVisible);
+}
+
+function setWorkspaceMode(primaryMode, subMode = null, options = {}) {
+    const state = g_ctx.workspaceModeState;
+    state.primaryMode = primaryMode || 'terrain';
+    state.subMode = subMode || null;
+    state.activeLayer = g_ctx.activeLayer;
+
+    const editorMode = options.editorMode || primaryMode || 'terrain';
+    const syncSemantic = options.syncSemantic !== false;
+
+    g_ctx.editorMode = editorMode;
+
+    if (syncSemantic) {
+        if (g_ctx.semantic && typeof g_ctx.semantic.setEditorMode === 'function') {
+            g_ctx.semantic.setEditorMode(editorMode);
+            g_ctx.semanticMode = editorMode !== 'terrain' && editorMode !== 'animation';
+        } else if (editorMode === 'terrain' || editorMode === 'animation') {
+            setSemanticMode(false);
+        } else {
+            setSemanticMode(true);
+        }
+    }
+
+    updateWorkspaceModeUI();
+    switchWorkspaceStage(state.primaryMode, state.subMode);
+}
+
+function forwardSelectedTileToObjectPaint() {
+    const state = g_ctx.workspaceModeState || {};
+    if (state.primaryMode !== 'object' || state.subMode !== 'paint') {
+        return;
+    }
+    const tileIndex = Array.isArray(g_ctx.selected_tiles) && g_ctx.selected_tiles.length > 0
+        ? Number(g_ctx.selected_tiles[0]?.[2])
+        : Number(g_ctx.tile_index);
+    if (!Number.isFinite(tileIndex) || tileIndex < 0) {
+        return;
+    }
+    const tileX = tileIndex % g_ctx.tilesettilew;
+    const tileY = Math.floor(tileIndex / g_ctx.tilesettilew);
+    applyTileAsAppearance(tileX, tileY, g_ctx.tilesetpath);
+}
+
+function forwardSelectedAnimationToObjectPaint() {
+    const state = g_ctx.workspaceModeState || {};
+    if (state.primaryMode !== 'object' || state.subMode !== 'paint') {
+        return;
+    }
+    const sheet = g_ctx.sceneAnimBrush?.sheet || g_ctx.spritesheetname;
+    const animationName = g_ctx.sceneAnimBrush?.animationName || '';
+    if (!sheet || !animationName) {
+        return;
+    }
+    applyAnimationAsAppearance(animationName, sheet);
 }
 
 function updateStatusCoordFromGlobal(x, y) {
@@ -1409,25 +1630,21 @@ function setSemanticMode(enabled) {
 
 function setEditorMode(mode) {
     const nextMode = mode || 'terrain';
-    g_ctx.editorMode = nextMode;
+    let primaryMode = nextMode;
+    let subMode = null;
 
-    if (g_ctx.semantic && typeof g_ctx.semantic.setEditorMode === 'function') {
-        g_ctx.semantic.setEditorMode(nextMode);
-        g_ctx.semanticMode = nextMode !== 'terrain';
-    } else if (nextMode === 'terrain') {
-        setSemanticMode(false);
-    } else {
-        setSemanticMode(true);
+    if (nextMode === 'object-paint') {
+        primaryMode = 'object';
+        subMode = 'paint';
+    } else if (nextMode === 'object-place') {
+        primaryMode = 'object';
+        subMode = 'place';
     }
 
-    const modeButtons = document.querySelectorAll('.mode-btn');
-    modeButtons.forEach((button) => {
-        const active = button.dataset.mode === nextMode;
-        button.classList.toggle('active', active);
-        button.classList.toggle('is-active', active);
+    setWorkspaceMode(primaryMode, subMode, {
+        editorMode: primaryMode,
+        syncSemantic: true,
     });
-
-    updateStatusMode();
 }
 
 function setActiveLayer(layerIndex) {
@@ -1437,6 +1654,9 @@ function setActiveLayer(layerIndex) {
     }
 
     g_ctx.activeLayer = nextIndex;
+    if (g_ctx.workspaceModeState) {
+        g_ctx.workspaceModeState.activeLayer = nextIndex;
+    }
 
     const layerButtons = document.querySelectorAll('.layer-btn');
     layerButtons.forEach((button) => {
@@ -1481,12 +1701,9 @@ function switchSidebarTab(panelName) {
         }
     }
 
-    if (panel === 'terrain' || panel === 'layers' || panel === 'files') {
-        setEditorMode('terrain');
-    } else if (panel === 'sem-objects') {
-        setEditorMode('object');
-    } else if (panel === 'sem-zones') {
-        setEditorMode('zone');
+    const mappedWorkspaceMode = SIDEBAR_PANEL_TO_WORKSPACE_MODE[panel];
+    if (mappedWorkspaceMode) {
+        setEditorMode(mappedWorkspaceMode);
     }
 }
 
@@ -1512,14 +1729,13 @@ function bindWorkspaceUI() {
     const modeButtons = document.querySelectorAll('.mode-btn');
     modeButtons.forEach((button) => {
         button.addEventListener('click', () => {
-            setEditorMode(button.dataset.mode);
-            if (button.dataset.mode === 'object') {
-                switchSidebarTab('sem-objects');
-            } else if (button.dataset.mode === 'zone') {
-                switchSidebarTab('sem-zones');
-            } else {
-                switchSidebarTab('terrain');
-            }
+            const workspaceMode = button.dataset.workspaceMode || 'terrain';
+            const config = WORKSPACE_MODE_CONFIG[workspaceMode] || WORKSPACE_MODE_CONFIG.terrain;
+            setWorkspaceMode(config.primaryMode, config.subMode, {
+                editorMode: config.editorMode,
+                syncSemantic: true,
+            });
+            switchSidebarTab(config.sidebarPanel);
         });
     });
 
@@ -1540,7 +1756,19 @@ function bindWorkspaceUI() {
 
     setActiveLayer(g_ctx.activeLayer || 0);
     switchSidebarTab(g_ctx.activeSidebarPanel || 'terrain');
+    updateWorkspaceModeUI();
+    switchWorkspaceStage(g_ctx.workspaceModeState?.primaryMode || 'terrain', g_ctx.workspaceModeState?.subMode || null);
     updateStatusCoordFromGlobal(NaN, NaN);
+}
+
+function setWorkspaceModeFromObjectPaint(mode) {
+    const nextMode = mode === 'object-place' ? 'object-place' : 'object-paint';
+    const config = WORKSPACE_MODE_CONFIG[nextMode] || WORKSPACE_MODE_CONFIG['object-place'];
+    setWorkspaceMode(config.primaryMode, config.subMode, {
+        editorMode: config.editorMode,
+        syncSemantic: true,
+    });
+    switchSidebarTab(config.sidebarPanel);
 }
 
 // fill base level with currentIndex tile 
@@ -1716,6 +1944,7 @@ function onTilesetDragEnd(e)
     }
     g_ctx.tileset.dragctx.square.clear();
     updateTilesetSelectionHighlight();
+    forwardSelectedTileToObjectPaint();
     // g_ctx.tileset.dragctx.tooltip.clear();
 }
 
@@ -2056,7 +2285,33 @@ function getActiveLayer() {
 function onCompositePointerDown(compositeCtx, e) {
     updateStatusCoordFromGlobal(e.data.global.x, e.data.global.y);
 
-    if (g_ctx.editorMode !== 'terrain' || isSemanticPlacementEnabled()) {
+    const state = g_ctx.workspaceModeState || {};
+    switch (state.primaryMode) {
+        case 'animation': {
+            const animationStage = g_ctx.composite?.workspaceStages?.animationStage;
+            if (animationStage && typeof g_ctx.handleAnimationWorkspacePointer === 'function') {
+                const local = e.data.getLocalPosition(animationStage);
+                g_ctx.handleAnimationWorkspacePointer(local.x, local.y);
+            }
+            return;
+        }
+        case 'object':
+            if (state.subMode === 'paint') {
+                if (typeof g_ctx.handleObjectPaintWorkspacePointer === 'function') {
+                    g_ctx.handleObjectPaintWorkspacePointer(e.data.global.x, e.data.global.y, e);
+                }
+                return;
+            }
+            break;
+        default:
+            break;
+    }
+
+    if (g_ctx.editorMode !== 'terrain' && g_ctx.editorMode !== 'object' && g_ctx.editorMode !== 'zone') {
+        return;
+    }
+
+    if (isSemanticPlacementEnabled()) {
         return;
     }
 
@@ -2067,11 +2322,13 @@ function onCompositePointerDown(compositeCtx, e) {
 
     const selectedAnim = selectSceneAnimInstance(layer, e.data.global.x, e.data.global.y);
     if (selectedAnim) {
+        g_ctx.workspaceModeState.selection = selectedAnim;
         g_ctx.compositeDragLayer = null;
         g_ctx.compositeDragging = false;
         return;
     }
 
+    g_ctx.workspaceModeState.selection = null;
     g_ctx.compositeDragLayer = layer;
     g_ctx.compositeDragging = true;
     onLevelPointerDown(layer, e);
@@ -2607,13 +2864,17 @@ async function init() {
         onSwitchSidebarTab: switchSidebarTab,
     });
 
+    g_ctx.setWorkspaceModeFromObjectPaint = setWorkspaceModeFromObjectPaint;
+    initObjectPaintEditor(g_ctx, PIXI, g_ctx.semantic);
+
     setEditorMode('terrain');
 
     window.addEventListener('keydown', (event) => {
         if (event.code === 'KeyV') {
-            const nextMode = g_ctx.semanticMode ? 'terrain' : 'object';
+            const currentState = g_ctx.workspaceModeState || {};
+            const nextMode = currentState.primaryMode === 'object' ? 'terrain' : 'object-place';
             setEditorMode(nextMode);
-            if (nextMode === 'object') {
+            if (nextMode === 'object-place') {
                 switchSidebarTab('sem-objects');
             } else {
                 switchSidebarTab('terrain');
@@ -2624,6 +2885,20 @@ async function init() {
     g_ctx.setSceneAnimBrush = setSceneAnimBrush;
     g_ctx.selectSceneAnimInstance = selectSceneAnimInstance;
     g_ctx.applySceneAnimSelectionToInstance = applySceneAnimSelectionToInstance;
+    g_ctx.registerSpritesheetResourceFromAnimationDraft = (resourceName, sheet, draftMeta = {}) => {
+        const targetName = resourceName || `${draftMeta.animationName || 'animation'}.json`;
+        return registerSpritesheetResource(targetName, sheet, {
+            type: 'spritesheet',
+            sourceKind: 'local',
+            fileName: targetName,
+            path: targetName,
+            isActive: true,
+            meta: draftMeta,
+        });
+    };
+
+    initAnimationEditor(g_ctx, PIXI);
+    renderObjectPaintPreview();
 
     UI.initLevelLoader(loadMapFromModule);
     UI.initCompositePNGLoader();
