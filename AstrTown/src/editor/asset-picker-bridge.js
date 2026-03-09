@@ -8,8 +8,65 @@ import {
     isAuthenticated,
 } from './auth-bridge.js';
 
-// Convex HTTP API 基础路径
-const CONVEX_API_BASE = '/api/convex';
+// 资源库 HTTP 代理基础路径
+function getAssetApiBaseUrl() {
+    let baseUrl = import.meta.env.VITE_CONVEX_SITE_URL;
+    console.log('[asset-picker-bridge] 开始解析资源库 HTTP endpoint', {
+        siteUrl: import.meta.env.VITE_CONVEX_SITE_URL,
+        convexUrl: import.meta.env.VITE_CONVEX_URL,
+        origin: window.location.origin,
+    });
+
+    if (!baseUrl) {
+        const convexUrl = import.meta.env.VITE_CONVEX_URL;
+        if (convexUrl) {
+            try {
+                const parsed = new URL(convexUrl.trim());
+                if (parsed.hostname.endsWith('.convex.cloud')) {
+                    parsed.hostname = parsed.hostname.replace('.convex.cloud', '.convex.site');
+                }
+                parsed.pathname = '';
+                parsed.search = '';
+                parsed.hash = '';
+                baseUrl = parsed.toString();
+                console.log('[asset-picker-bridge] 已从 VITE_CONVEX_URL 推导站点地址', { baseUrl });
+            } catch (error) {
+                console.log('[asset-picker-bridge] 解析 VITE_CONVEX_URL 失败，继续尝试 fallback', {
+                    convexUrl,
+                    error,
+                });
+            }
+        }
+    }
+
+    if (!baseUrl) {
+        const origin = window.location.origin;
+        if (origin && origin !== 'http://localhost:5174' && origin !== 'http://localhost:5173') {
+            baseUrl = origin;
+            console.log('[asset-picker-bridge] 使用 window.location.origin 作为站点地址', { baseUrl });
+        }
+    }
+
+    if (!baseUrl) {
+        throw new Error('未配置 VITE_CONVEX_URL，无法访问资源库');
+    }
+
+    const endpoint = baseUrl.trim();
+    console.log('[asset-picker-bridge] 已解析资源库 HTTP 基础地址', { endpoint });
+    return endpoint;
+}
+
+function buildAssetApiUrl(path, params = undefined) {
+    const url = new URL(path, getAssetApiBaseUrl());
+    const entries = params && typeof params === 'object' ? Object.entries(params) : [];
+    for (const [key, value] of entries) {
+        if (value === undefined || value === null || value === '') {
+            continue;
+        }
+        url.searchParams.set(key, String(value));
+    }
+    return url.toString();
+}
 
 function getAssetTitle(asset, assetKind) {
     if (assetKind === 'sceneAnimation') {
@@ -41,48 +98,80 @@ function getSessionTokenArg() {
     return typeof token === 'string' && token.trim() ? token.trim() : undefined;
 }
 
-// 通过 HTTP 调用 Convex query
-async function callConvexQuery(queryName, args = {}, options = {}) {
-    const { requireAuth = false } = options;
-    const url = new URL(CONVEX_API_BASE, window.location.origin);
-    const nextArgs = { ...(args || {}) };
+// 通过项目 HTTP 代理访问资源库
+async function callAssetApi(path, options = {}) {
+    const {
+        method = 'GET',
+        query,
+        body,
+        requireAuth = false,
+    } = options;
     const sessionToken = getSessionTokenArg();
 
-    if (requireAuth) {
-        if (!sessionToken) {
-            throw new Error('未登录，无法访问个人资源');
-        }
-        nextArgs.sessionToken = sessionToken;
-    } else if (sessionToken && typeof nextArgs.sessionToken === 'undefined') {
-        nextArgs.sessionToken = sessionToken;
+    if (requireAuth && !sessionToken) {
+        throw new Error('未登录，无法访问个人资源');
     }
 
-    url.searchParams.set('function', queryName);
-    url.searchParams.set('args', JSON.stringify(nextArgs));
+    const endpoint = buildAssetApiUrl(path, query);
+    console.log('[asset-picker-bridge] 资源库 HTTP 请求', {
+        endpoint,
+        method,
+        query,
+        body,
+        requireAuth,
+    });
 
-    const response = requireAuth
-        ? await authenticatedFetch(url.toString())
-        : await fetch(url.toString());
+    const fetchOptions = {
+        method,
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    };
+
+    if (body !== undefined) {
+        fetchOptions.body = JSON.stringify(body);
+    }
+
+    const response = sessionToken
+        ? await authenticatedFetch(endpoint, fetchOptions)
+        : await fetch(endpoint, fetchOptions);
 
     if (!response.ok) {
-        throw new Error(`查询失败：${response.status} ${response.statusText}`);
+        const errorText = await response.text();
+        console.error('[asset-picker-bridge] 资源库 HTTP 请求失败', {
+            status: response.status,
+            statusText: response.statusText,
+            errorText,
+        });
+
+        let errorMessage = `查询失败：${response.status} ${response.statusText}`;
+        try {
+            const payload = JSON.parse(errorText);
+            if (payload && typeof payload.message === 'string' && payload.message.trim()) {
+                errorMessage = payload.message.trim();
+            }
+        } catch {
+            // ignore json parse error
+        }
+
+        throw new Error(errorMessage);
     }
 
-    const payload = await response.json();
-    if (payload && typeof payload === 'object' && 'value' in payload) {
-        return payload.value;
-    }
-    return payload;
+    return await response.json();
 }
 
 // 获取已发布的瓦片集列表
 export async function listPublishedTilesets() {
-    return await callConvexQuery('assets:listTilesets', { status: 'published' });
+    return await callAssetApi('/api/assets/tilesets', {
+        query: { status: 'published' },
+    });
 }
 
 // 获取已发布的场景动画列表
 export async function listPublishedSceneAnimations() {
-    return await callConvexQuery('assets:listSceneAnimations', { status: 'published' });
+    return await callAssetApi('/api/assets/scene-animations', {
+        query: { status: 'published' },
+    });
 }
 
 // 获取当前用户的瓦片集列表（未发布资源也允许查看）
@@ -93,7 +182,10 @@ export async function listMyTilesets() {
 
     const statusList = ['draft', 'submitted', 'approved', 'published'];
     const resultList = await Promise.all(
-        statusList.map((status) => callConvexQuery('assets:listTilesets', { status }, { requireAuth: true })),
+        statusList.map((status) => callAssetApi('/api/assets/tilesets', {
+            query: { status },
+            requireAuth: status !== 'published',
+        })),
     );
 
     return mergeAssetList(resultList.flat());
@@ -107,7 +199,10 @@ export async function listMySceneAnimations() {
 
     const statusList = ['draft', 'submitted', 'approved', 'published'];
     const resultList = await Promise.all(
-        statusList.map((status) => callConvexQuery('assets:listSceneAnimations', { status }, { requireAuth: true })),
+        statusList.map((status) => callAssetApi('/api/assets/scene-animations', {
+            query: { status },
+            requireAuth: status !== 'published',
+        })),
     );
 
     return mergeAssetList(resultList.flat());
@@ -126,18 +221,27 @@ function mergeAssetList(assets = []) {
 
 // 获取资源详情
 export async function getTilesetDetail(assetId) {
-    return await callConvexQuery('assets:getTilesetDetail', { id: assetId });
+    return await callAssetApi('/api/assets/tileset-detail', {
+        method: 'POST',
+        body: { id: assetId },
+    });
 }
 
 export async function getSceneAnimationDetail(assetId) {
-    return await callConvexQuery('assets:getSceneAnimationDetail', { id: assetId });
+    return await callAssetApi('/api/assets/scene-animation-detail', {
+        method: 'POST',
+        body: { id: assetId },
+    });
 }
 
 // 获取资源文件 URL
 export async function getAssetFileUrl(assetKind, storageId) {
-    const result = await callConvexQuery('assets:getAssetFileUrl', {
-        assetKind,
-        storageId,
+    const result = await callAssetApi('/api/assets/file-url', {
+        method: 'POST',
+        body: {
+            assetKind,
+            storageId,
+        },
     });
     return result?.url || '';
 }

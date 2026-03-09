@@ -1,5 +1,13 @@
 import { httpRouter } from 'convex/server';
 import { getAuthMe, optionsAuth, postAuthLogin, postAuthLogout, postAuthRegister } from './auth';
+import {
+  getSceneAnimationsHttp,
+  getTilesetsHttp,
+  optionsAssets,
+  postAssetFileUrlHttp,
+  postSceneAnimationDetailHttp,
+  postTilesetDetailHttp,
+} from './assets/http';
 import { handleReplicateWebhook } from './music';
 import {
   getAgentStatus,
@@ -122,6 +130,42 @@ http.route({
   pathPrefix: '/api/auth/',
   method: 'OPTIONS',
   handler: optionsAuth,
+});
+
+http.route({
+  path: '/api/assets/tilesets',
+  method: 'GET',
+  handler: getTilesetsHttp,
+});
+
+http.route({
+  path: '/api/assets/scene-animations',
+  method: 'GET',
+  handler: getSceneAnimationsHttp,
+});
+
+http.route({
+  path: '/api/assets/tileset-detail',
+  method: 'POST',
+  handler: postTilesetDetailHttp,
+});
+
+http.route({
+  path: '/api/assets/scene-animation-detail',
+  method: 'POST',
+  handler: postSceneAnimationDetailHttp,
+});
+
+http.route({
+  path: '/api/assets/file-url',
+  method: 'POST',
+  handler: postAssetFileUrlHttp,
+});
+
+http.route({
+  pathPrefix: '/api/assets/',
+  method: 'OPTIONS',
+  handler: optionsAssets,
 });
 
 http.route({
